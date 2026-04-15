@@ -21,7 +21,8 @@ int react_entrence(unsigned short port, kvs_handler hd);
 int nytco_start(int port, kvs_handler hd);
 int kvs_split_multi_cmd(char *msg, char *cmds[]);
 int kvs_split_token(char *msg, char *tokens[]);
-int kvs_filter_protocol(char *tokens[], int count, char *response);
+int kvs_filter_protocol(char *tokens[], int count,
+                        char *response); // 根据count的大小,再细分提高性能
 
 // 不直接使用系统调用分配内存，优势:跨平台能力
 void *kvs_malloc(size_t size);

@@ -294,7 +294,7 @@ int set_protocal(char *tokens[]) {
 #endif
 #if ENABLE_RBTREE
   case FILE_RSET:
-    printf("rset %s %s", tokens[1], tokens[2]);
+    // printf("rset %s %s", tokens[1], tokens[2]);
     ret = kvs_rbtree_set(global_rbtree, tokens[1], tokens[2]);
     return 0;
 #endif
@@ -398,7 +398,7 @@ int execute_recovered_cmds(const char *file) {
     // printf("\n---------- 执行指令 %d ----------\n", i + 1);
     // printf("原始指令：%s\n", curr_cmd);
 
-    char *tokens[MAX_TOKENS] = {}; // 空初始化器（符合VLA规则)
+    char *tokens[MAX_TOKENS]; // 空初始化器（符合VLA规则)
 
     // 手动初始化：tokens所有指针置NULL,response所有字节置0
     memset(tokens, 0, sizeof(tokens)); // 指针数组置NULL（0等价于NULL)

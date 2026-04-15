@@ -69,6 +69,7 @@ int accept_cb(int fd) {
     printf("accept errno: %d --> %s\n", errno, strerror(errno));
     return -1;
   }
+  printf("建立链接成功,fd=%d的\n", clientfd);
 
   event_register(clientfd, EPOLLIN); // | EPOLLET
 
@@ -90,7 +91,7 @@ int recv_cb(int fd) {
   conn_t *conn = &conn_list[fd];
   int ret;
 
-  // 1. 接收数据（不变，解决粘包）
+  // 1. 接收数据（和旧逻辑完全一样）
   ret =
       recv(fd, conn->rbuffer + conn->rlength, BUFFER_LENGTH - conn->rlength, 0);
   if (ret <= 0) {
@@ -101,109 +102,99 @@ int recv_cb(int fd) {
   }
   conn->rlength += ret;
 
-  // 2. 循环解析粘包（不变）
+  // 2. 循环解析粘包 → **完全复刻你旧代码的循环结构**
   while (1) {
-    if (conn->parse_state == 0) { // 读4字节头
-      if (conn->rlength < 4)
-        break;
-
-      uint32_t tmp_len;
-      if (parse_head(conn->rbuffer, &tmp_len) == -1) {
-        close(fd);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-        return 0;
-      }
-      conn->need_len = tmp_len;
-
-      if (conn->need_len > BUFFER_LENGTH - 4) {
-        close(fd);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-        return 0;
-      }
-
-      memmove(conn->rbuffer, conn->rbuffer + 4, conn->rlength - 4);
-      conn->rlength -= 4;
-      conn->parse_state = 1;
+    // ============== 修复：缓冲区空，直接退出（和旧逻辑一致） ==============
+    if (conn->rlength <= 0) {
+      break;
     }
 
-    if (conn->parse_state == 1) { // 读数据
-      if (conn->rlength < conn->need_len)
-        break;
+    // ===================== RESP 协议解析（替换旧的4字节头）
+    // =====================
+    char *cmd = NULL;
+    char *params[10] = {0};
+    int paramCnt = 0;
+    StoreType type;
 
-      // ===================== 【修复：数据读完=0，break】 =====================
-      if (conn->need_len == 0) {
-        conn->parse_state = 0;
-        break;
-      }
-
-      // 协议非法校验（不变）
-      if (conn->need_len == 1) {
-        close(fd);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-        return 0;
-      }
-      if (conn->rbuffer[conn->need_len - 2] != '\r' ||
-          conn->rbuffer[conn->need_len - 1] != '\n') {
-        close(fd);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-        return 0;
-      }
-      // =====================================================================
-
-      conn->rbuffer[conn->need_len - 2] = '\0';
-      printf("收到的数据为%s",conn->rbuffer);
-
-      // ===================== 【核心：发送队列追加（你的设计）】
-      // =====================
-      // 1. 计算当前响应在wbuffer的【起始偏移】（队列尾的偏移+长度）
-      uint32_t curr_off = 0;
-      if (conn->send_queue_cnt > 0) {
-        int last_idx = conn->send_queue_tail - 1;
-        if (last_idx < 0)
-          last_idx = MAX_SEND_QUEUE - 1;
-        curr_off =
-            conn->send_off_queue[last_idx] + conn->send_len_queue[last_idx];
-      }
-
-      // 2. 校验偏移越界
-      if (curr_off >= BUFFER_LENGTH) {
-        close(fd);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-        return 0;
-      }
-
-      // 3. handler零拷贝：直接写 wbuffer + 偏移（绝不覆盖！）
-      int curr_len = handler(conn->rbuffer, strlen(conn->rbuffer),
-                             conn->wbuffer + curr_off);
-
-      // 4. 【你的要求】把【偏移+长度】存入数组队列
-      if (conn->send_queue_cnt >= MAX_SEND_QUEUE) { // 队列满，拒绝服务
-        close(fd);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-        return 0;
-      }
-      conn->send_off_queue[conn->send_queue_tail] = curr_off; // 存偏移（起点）
-      conn->send_len_queue[conn->send_queue_tail] = curr_len; // 存长度
-      conn->send_queue_tail = (conn->send_queue_tail + 1) % MAX_SEND_QUEUE;
-      conn->send_queue_cnt++;
-      // ============================================================================
-
-      // 移除已处理包（不变）
-      memmove(conn->rbuffer, conn->rbuffer + conn->need_len,
-              conn->rlength - conn->need_len);
-      conn->rlength -= conn->need_len;
-      conn->parse_state = 0;
-      continue;
+    int parseRet =
+        parseRespKv(conn->rbuffer, &cmd, &params[0], &paramCnt, &type);
+    // 半包 → 直接break，不return（和旧逻辑完全一致！）
+    if (parseRet == -1) {
+      break;
     }
+    // 协议错误 → 关闭连接（和旧逻辑一致）
+    if (parseRet < 0) {
+      close(fd);
+      epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+      return 0;
+    }
+
+    // ===================== 【核心：发送队列逻辑 → 100% 复用你旧代码】
+    // =====================
+    // 1. 计算偏移（和你原来的代码一字不差）
+    uint32_t curr_off = 0;
+    if (conn->send_queue_cnt > 0) {
+      int last_idx = conn->send_queue_tail - 1;
+      if (last_idx < 0)
+        last_idx = MAX_SEND_QUEUE - 1;
+      curr_off =
+          conn->send_off_queue[last_idx] + conn->send_len_queue[last_idx];
+    }
+
+    // 2. 越界校验（一字不差）
+    if (curr_off >= BUFFER_LENGTH) {
+      close(fd);
+      epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+      return 0;
+    }
+
+    // 3. 构建tokens + 调用业务函数
+    char *tokens[20] = {0};
+    int tokenIdx = 0;
+    tokens[tokenIdx++] = cmd;
+    for (int i = 0; i < paramCnt; i++) {
+      tokens[tokenIdx++] = params[i];
+    }
+    tokens[tokenIdx] = NULL;
+
+    // 调用handler（适配你的函数签名）
+    int curr_len =
+        kvs_filter_protocol(tokens, paramCnt + 1, conn->wbuffer + curr_off);
+    printf("kvs_filter_protocol执行完成，响应长度：%d\n", curr_len);
+
+    // 4. 入发送队列（**和你旧代码完全一样**）
+    if (conn->send_queue_cnt >= MAX_SEND_QUEUE) {
+      close(fd);
+      epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+      return 0;
+    }
+    conn->send_off_queue[conn->send_queue_tail] = curr_off;
+    conn->send_len_queue[conn->send_queue_tail] = curr_len;
+    conn->send_queue_tail = (conn->send_queue_tail + 1) % MAX_SEND_QUEUE;
+    conn->send_queue_cnt++;
+    // ============================================================================
+
+    // ===================== 移除已解析数据（RESP版，和旧逻辑一致）
+    // =====================
+    int oneRespLen = getOneRespLen(conn->rbuffer);
+    memmove(conn->rbuffer, conn->rbuffer + oneRespLen,
+            conn->rlength - oneRespLen);
+    conn->rlength -= oneRespLen;
+
+    // ============== 关键修复：解析完一条 → CONTINUE！和你旧代码完全一致
+    // ==============
+    continue;
   }
 
-  // 有排队响应，切换EPOLLOUT
+  // 有响应待发送 → 切换EPOLLOUT（**和旧逻辑一字不差**）
   if (conn->send_queue_cnt > 0) {
     set_event(fd, EPOLLOUT, 0);
   }
 
   return ret;
 }
+
+// send_cb 完全不用改！用你原来的即可
 int send_cb(int fd) {
   conn_t *conn = &conn_list[fd];
   int send_ret = 0;
@@ -222,6 +213,7 @@ int send_cb(int fd) {
       epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
       return send_ret;
     }
+    printf("发送成功，长度：%d\n", curr_len);
 
     // 3. 发完一个，队列头后移，计数-1
     conn->send_queue_head = (conn->send_queue_head + 1) % MAX_SEND_QUEUE;

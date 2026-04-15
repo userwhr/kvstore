@@ -12,10 +12,6 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-// 固定从节点 8888 端口
-#define SLAVE_IP "127.0.0.1"
-#define SLAVE_PORT 8888
-
 #define CONNECTION_SIZE 1024
 #define MAX_PORTS 20
 #define TIME_SUB_MS(tv1, tv2)                                                  \

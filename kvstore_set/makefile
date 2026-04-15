@@ -1,7 +1,7 @@
 CC = gcc
 TARGET = kvstore
 LINK =$(BUILD)kvs_array.o $(BUILD)reactor.o $(BUILD)kvs_rbtree.o \
-	$(BUILD)nty_server.o $(BUILD)kvs_hash.o $(BUILD)kvs_skiplist.o \
+	$(BUILD)kvs_hash.o $(BUILD)kvs_skiplist.o \
 	$(BUILD)kvstore.o $(BUILD)kvs_persist.o \
 	$(BUILD)kvs_mempool.o $(BUILD)resp.o
 NTYCO_COMPLIE = -I ./core/ -L ./core/ -lntyco -lpthread
@@ -19,5 +19,4 @@ compile:
 	gcc -c $(SRC)kvstore.c -o $(BUILD)kvstore.o -I $(Include_path) && \
 	gcc -c $(SRC)kvs_persist.c -o $(BUILD)kvs_persist.o -I $(Include_path) && \
 	gcc -c $(SRC)kvs_mempool.c -o $(BUILD)kvs_mempool.o -I $(Include_path) && \
-	gcc -c $(SRC)resp.c -o $(BUILD)resp.o -I $(Include_path) && \
-	gcc -c $(SRC)nty_server.c -I ./core/ -o $(BUILD)nty_server.o
+	gcc -c $(SRC)resp.c -o $(BUILD)resp.o -I $(Include_path)

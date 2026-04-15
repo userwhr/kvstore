@@ -1,10 +1,9 @@
 #define ENABLE_FULL_PERSIST 1
 #define ENABLE_INCREMENTAL_PERSIST 0
 
-#define LOG_PATH                                                               \
-  "/home/wanghuiran/KVSTORE/kvstore/log/kvstore_full_log.txt" // 日志位置
-#define MAX_RECOVER_CMD 10000 // 日志里能存储的最大文件数
-#define LINE_MAX 1024 * 1024  // SET KEY VALUE 这一个指令的最大长度
+#define LOG_PATH "./log/kvstore_full_log.txt" // 日志位置
+#define MAX_RECOVER_CMD 10000                 // 日志里能存储的最大文件数
+#define LINE_MAX 1024 * 1024 // SET KEY VALUE 这一个指令的最大长度
 
 // mmap
 #define DEFAULT_CAPACITY 4096 * 2 // 初始给匿名mmap分配的空间

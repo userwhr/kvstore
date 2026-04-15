@@ -38,7 +38,7 @@ int main(int argc, char *argv[]) {
 #if ENABLE_FULL_PERSIST
   // 🔥 【正确顺序】1. 先初始化 mmap（空文件预分配，但 used_len=0）
   kvs_log = (file_content_t *)kvs_malloc(sizeof(file_content_t));
-  printf("map_file_to_struct\n");
+  // printf("map_file_to_struct\n");
   map_file_to_struct(LOG_PATH, kvs_log);
 
   // 🔥 【正确顺序】2. 再执行恢复（只读 used_len 有效数据，无 null）

@@ -11,12 +11,7 @@
 int APPEND_STR = 1;
 extern file_content_t *kvs_log; // 日志文件mmap以及信息存储的结构体
 extern int filefd;
-
-// 指令集（和宏下标严格对应）
-const char *command[] = {"set",   "get",   "del",   "mod",   "exist",
-                         "rset",  "rget",  "rdel",  "rmod",  "rexist",
-                         "hset",  "hget",  "hdel",  "hmod",  "hexist",
-                         "skset", "skget", "skdel", "skmod", "skexist"};
+extern char *command[];
 
 // 声明函数
 int kvs_split_token(char *msg, char *tokens[]);
@@ -222,15 +217,17 @@ int kvs_protocol(char *msg, int length, char *response) {
 
 // tokens中是不包括\r\n的
 int kvs_filter_protocol(char *tokens[], int count, char *response) {
-  memset(response, 0, strlen(response) + 1);
+  // 安全初始化响应缓冲区的前几个字节
+  int len_rsp = 0;
+  response[0] = '\0';
 
-  if (tokens == NULL || count == 0 || response == NULL) {
+  if (tokens == NULL || response == NULL || count == 0) {
     strcpy(response, "error: invalid params\r\n");
-    return -1;
+    return strlen(response);
   }
   if (tokens[0] == NULL) {
     strcpy(response, "error: empty command\r\n");
-    return -1;
+    return strlen(response);
   }
 
   int cmd = KVS_CMD_START;
@@ -252,14 +249,7 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
 #if ENABLE_FULL_PERSIST
-
       append_mmap_cmd(kvs_log, "set", tokens[1], tokens[2]);
-//       if (filefd != -1) {
-//         sprintf(cmd_buf, "%s %s %s\r\n", tokens[0], tokens[1],
-//         tokens[2]); write(filefd, cmd_buf, strlen(cmd_buf));
-//       } else {
-//         perror("open log file failed (SET)");
-//       }
 #endif
       length = sprintf(response, "ok\r\n");
     } else if (ret > 0) {
@@ -325,14 +315,6 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-      // #if ENABLE_FULL_PERSIST
-      //       if (filefd != -1) {
-      //         sprintf(cmd_buf, "%s %s %s\r\n", tokens[0], tokens[1],
-      //         tokens[2]); write(filefd, cmd_buf, strlen(cmd_buf));
-      //       } else {
-      //         perror("open log file failed (RSET)");
-      //       }
-      // #endif
       length = sprintf(response, "ok\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "exist\r\n");
@@ -398,14 +380,6 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-      // #if ENABLE_FULL_PERSIST
-      //       if (filefd != -1) {
-      //         sprintf(cmd_buf, "%s %s %s\r\n", tokens[0], tokens[1],
-      //         tokens[2]); write(filefd, cmd_buf, strlen(cmd_buf));
-      //       } else {
-      //         perror("open log file failed (HSET)");
-      //       }
-      // #endif
       length = sprintf(response, "ok\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "exist\r\n");
@@ -470,14 +444,6 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-      // #if ENABLE_FULL_PERSIST
-      //       if (filefd != -1) {
-      //         sprintf(cmd_buf, "%s %s %s\r\n", tokens[0], tokens[1],
-      //         tokens[2]); write(filefd, cmd_buf, strlen(cmd_buf));
-      //       } else {
-      //         perror("open log file failed (SKSET)");
-      //       }
-      // #endif
       length = sprintf(response, "ok\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "exist\r\n");
@@ -540,6 +506,6 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
     length = sprintf(response, "error cmd\r\n");
     break;
   }
-
-  return 0;
+  len_rsp = strlen(response);
+  return len_rsp;
 }

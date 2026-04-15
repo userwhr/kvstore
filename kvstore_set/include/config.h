@@ -41,3 +41,7 @@
 
 // 启动主(写)节点
 #define START_MASTER_NODE 1
+
+// 固定从节点 8888 端口
+#define SLAVE_IP "127.0.0.1"
+#define SLAVE_PORT 8888

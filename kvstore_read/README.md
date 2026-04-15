@@ -203,6 +203,8 @@ void kvs_free(void *ptr);       // 使用内存池释放
 ### 编译
 
 ```bash
+mkdir build
+mkdir log
 make
 ```
 
