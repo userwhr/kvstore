@@ -32,9 +32,10 @@ int matchCommand(const char *cmd, StoreType *type) {
   while (cmd[cmd_len] != '\0' && cmd[cmd_len] != '\r' && cmd[cmd_len] != '\n') {
     cmd_len++;
   }
-  
+
   for (int i = 0; i < COMMAND_COUNT; i++) {
-    if (strncasecmp(cmd, command[i], cmd_len) == 0 && command[i][cmd_len] == '\0') {
+    if (strncasecmp(cmd, command[i], cmd_len) == 0 &&
+        command[i][cmd_len] == '\0') {
       // 判定存储类型
       if (i < 5)
         *type = STORE_ARRAY;
@@ -50,24 +51,18 @@ int matchCommand(const char *cmd, StoreType *type) {
   return -1; // 命令不存在
 }
 
-// ====================== 核心解析函数（小驼峰）======================
-// 入参：RESP原始报文
-// 出参：命令、参数、参数个数、存储类型
-// outCmd set
-// params[0]=name params[1]=whr paramCnt=2 type array
+// 修复后的解析函数：只读rbuffer，不修改！复制数据+加\0，msg完全正常
 int parseRespKv(char *resp, char **outCmd, char **params, int *paramCnt,
                 StoreType *type) {
   char *p = resp;
   *paramCnt = 0;
 
-  // 1. 校验RESP数组格式
   if (*p != '*')
     return -1;
   p++;
   int totalArgs = parseInt(&p);
   skipCrlf(&p);
 
-  // 2. 解析所有参数
   for (int i = 0; i < totalArgs; i++) {
     if (*p != '$')
       return -2;
@@ -75,21 +70,24 @@ int parseRespKv(char *resp, char **outCmd, char **params, int *paramCnt,
     int len = parseInt(&p);
     skipCrlf(&p);
 
-    // 提取命令/参数，并在字符串末尾添加\0终止符
+    // ====================== 核心修复 ======================
+    // 🔥 不修改原始resp！分配新内存，拷贝数据，手动加\0
+    char *buf = malloc(len + 1);
+    memcpy(buf, p, len);
+    buf[len] = '\0'; // 只给副本加\0，原始rbuffer毫发无损
+    // ======================================================
+
     if (i == 0) {
-      *outCmd = p;
+      *outCmd = buf; // 命令：带\0的副本
     } else {
-      params[*paramCnt] = p;
+      params[*paramCnt] = buf; // 参数：带\0的副本
       (*paramCnt)++;
     }
 
-    // 在字符串末尾添加\0终止符（替换\r\n的第一个字符）
-    p[len] = '\0';
     p += len;
     skipCrlf(&p);
   }
 
-  // 3. 匹配命令
   int cmdIdx = matchCommand(*outCmd, type);
   if (cmdIdx == -1)
     return -3;

@@ -1,5 +1,6 @@
 #include "array.h"
 #include "config.h"
+#include "iouringTodesk.h"
 #include "kvs_persist.h"
 #include "mempool.h"
 #include "rbtree.h"
@@ -13,7 +14,8 @@
 #define KV_MAX 1024 // 单条指令支持的最大tokens数
 
 // kvstore.c的函数
-typedef int (*kvs_handler)(char *msg, int length, char *response);
+typedef int (*kvs_handler)(char *tokens[], char *msg, int count,
+                           char *response);
 void kvs_init(void);
 int kvs_protocol(char *msg, int length, char *response);
 int execute_recovered_cmds(const char *file);
@@ -21,7 +23,7 @@ int react_entrence(unsigned short port, kvs_handler hd);
 int nytco_start(int port, kvs_handler hd);
 int kvs_split_multi_cmd(char *msg, char *cmds[]);
 int kvs_split_token(char *msg, char *tokens[]);
-int kvs_filter_protocol(char *tokens[], int count,
+int kvs_filter_protocol(char *tokens[], char *msg, int count,
                         char *response); // 根据count的大小,再细分提高性能
 
 // 不直接使用系统调用分配内存，优势:跨平台能力

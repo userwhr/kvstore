@@ -70,7 +70,7 @@ class TCPClient:
             print(f"❌ 发送失败: {e}")
             return False
 
-    # ===================== 接收函数 =====================
+    # ===================== 接收函数（移除strip，保留原始\r\n） =====================
     def recv_message(self, is_batch: bool = False) -> Optional[str]:
         if not self.sock:
             return None
@@ -86,7 +86,8 @@ class TCPClient:
             if not response:
                 print("❌ 连接被服务器关闭")
                 return None
-            return response.decode("utf-8").strip()
+            # 🔥 关键修改：不strip，保留原始的 \r\n 结尾
+            return response.decode("utf-8")
         except Exception as e:
             print(f"❌ 接收失败: {e}")
             return None
@@ -97,7 +98,7 @@ class TCPClient:
             self.sock = None
             print("\n🔌 连接已关闭")
 
-# ===================== 批量测试 =====================
+# ===================== 批量测试（校验规则添加 \r\n） =====================
 def run_batch(client: TCPClient, op: str, mul: int):
     success = 0
     fail = 0
@@ -125,19 +126,19 @@ def run_batch(client: TCPClient, op: str, mul: int):
         val = i * mul
         if base_op == "set":
             cmd = f"{prefix}set key{i} {val}"
-            expect = "OK"
+            expect = "OK\r\n"  # 🔥 加 CRLF
         elif base_op == "get":
             cmd = f"{prefix}get key{i}"
-            expect = str(val)
+            expect = f"{val}\r\n"  # 🔥 加 CRLF
         elif base_op == "mod":
             cmd = f"{prefix}mod key{i} {val}"
-            expect = "OK"
+            expect = "OK\r\n"  # 🔥 加 CRLF
         elif base_op == "exist":
             cmd = f"{prefix}exist key{i}"
-            expect = "exist"
+            expect = "exist\r\n"  # 🔥 加 CRLF
         elif base_op == "del":
             cmd = f"{prefix}del key{i}"
-            expect = "OK"
+            expect = "OK\r\n"  # 🔥 加 CRLF
         else:
             fail +=1
             continue
@@ -146,7 +147,8 @@ def run_batch(client: TCPClient, op: str, mul: int):
             fail +=1
             continue
         resp = client.recv_message(is_batch=True)
-        if resp and expect in resp:
+        # 严格匹配带 \r\n 的响应
+        if resp and resp == expect:
             success +=1
         else:
             fail +=1
@@ -173,7 +175,7 @@ def test_big_key(client: TCPClient):
         print("❌ 发送失败")
         return
     resp = client.recv_message()
-    print(f"📩 rset响应: {resp}")
+    print(f"📩 rset响应: {repr(resp)}")  # repr 显示 \r\n
 
     cmd_get = f"rget {BIG_KEY}"
     print(f"\n📤 发送: {cmd_get[:100]}...")
@@ -186,19 +188,19 @@ def test_big_key(client: TCPClient):
     print(f"\n📤 发送: {cmd_mod[:100]}...")
     client.send_message(cmd_mod)
     resp = client.recv_message()
-    print(f"📩 rmod响应: {resp}")
+    print(f"📩 rmod响应: {repr(resp)}")
 
     cmd_exist = f"rexist {BIG_KEY}"
     print(f"\n📤 发送: {cmd_exist[:100]}...")
     client.send_message(cmd_exist)
     resp = client.recv_message()
-    print(f"📩 rexist响应: {resp}")
+    print(f"📩 rexist响应: {repr(resp)}")
 
     cmd_del = f"rdel {BIG_KEY}"
     print(f"\n📤 发送: {cmd_del[:100]}...")
     client.send_message(cmd_del)
     resp = client.recv_message()
-    print(f"📩 rdel响应: {resp}")
+    print(f"📩 rdel响应: {repr(resp)}")
 
     print("\n" + "=" * 65)
     print("🔑 大Key测试完成")
@@ -214,7 +216,7 @@ def test_big_value_mod_get(client: TCPClient):
     print(f"📤 发送set大Value指令")
     client.send_message(cmd_set)
     resp = client.recv_message()
-    print(f"📩 set响应: {resp}")
+    print(f"📩 set响应: {repr(resp)}")
 
     cmd_get = f"get {test_key}"
     print("\n📤 发送get大Value指令")
@@ -227,7 +229,7 @@ def test_big_value_mod_get(client: TCPClient):
     print(f"\n📤 发送mod大Value指令")
     client.send_message(cmd_mod)
     resp = client.recv_message()
-    print(f"📩 mod响应: {resp}")
+    print(f"📩 mod响应: {repr(resp)}")
 
     client.send_message(f"del {test_key}")
     client.recv_message()
@@ -256,7 +258,7 @@ def main():
                 print(f"🚀 发送大value指令")
                 if client.send_message(test_cmd):
                     resp = client.recv_message()
-                    print(f"📩 服务器响应：{resp}")
+                    print(f"📩 服务器响应：{repr(resp)}")
                 continue
             
             if user_input == "bigkey":
@@ -285,7 +287,7 @@ def main():
             print(f"📤 手动发送：{user_input}")
             if client.send_message(user_input):
                 resp = client.recv_message()
-                print(f"📩 服务器响应：{resp}")
+                print(f"📩 服务器响应：{repr(resp)}")
 
     except KeyboardInterrupt:
         print("\n\n⚠️  程序被手动中断")

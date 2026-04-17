@@ -10,12 +10,12 @@
 
 int APPEND_STR = 1;
 extern file_content_t *kvs_log; // 日志文件mmap以及信息存储的结构体
-extern int filefd;
+extern file_content_t *Icr_log;
 extern char *command[];
 
 // 声明函数
 int kvs_split_token(char *msg, char *tokens[]);
-int kvs_filter_protocol(char *tokens[], int count, char *response);
+int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response);
 // 新增：按&&拆分多条指令
 int kvs_split_multi_cmd(char *msg, char *cmds[]);
 
@@ -130,98 +130,17 @@ int kvs_split_multi_cmd(char *msg, char *cmds[]) {
   }
   return idx;
 }
-
-int kvs_protocol(char *msg, int length, char *response) {
-  if (msg == NULL || length == 0 || response == NULL) {
-    strcpy(response, "error: invalid params\r\n");
-    return -1;
-  }
-
-  // 1. 保存原始msg（strtok会修改原字符串），避免破坏输入
-  char *msg_copy = (char *)kvs_malloc(length + 1);
-  if (msg_copy == NULL) {
-    perror("malloc msg_copy failed");
-    strcpy(response, "error: malloc failed\r\n");
-    return -1;
-  }
-  strncpy(msg_copy, msg, length);
-  msg_copy[length] = '\0';
-
-  // 2. 按&&拆分多条指令
-  char *cmds[MAX_CMD_NUM] = {0};
-  int cmd_count = kvs_split_multi_cmd(msg_copy, cmds);
-  if (cmd_count <= 0) {
-    kvs_free(msg_copy);
-    if (cmd_count == 0) {
-      strcpy(response, "error: empty command\r\n");
-    } else {
-      strcpy(response, "error: split cmd failed\r\n");
-    }
-    return -1;
-  }
-
-  // 3. 遍历每条指令，解析并执行
-  char temp_response[LINE_MAX] = {0}; // 单条指令响应缓冲区
-  strcpy(response, "");               // 初始化总响应
-  for (int i = 0; i < cmd_count; i++) {
-    if (cmds[i] == NULL || strlen(cmds[i]) == 0) {
-      strcat(response, "error: empty sub cmd\r\n");
-      continue;
-    }
-
-#if ENABLE_INCREMENTAL_PERSIST
-    append_string_to_file("kvstore_increase_kvs_log.txt", cmds[i]);
-#endif
-
-    // 3.1 拆分当前指令为token
-    char *cmd_copy = (char *)kvs_malloc(strlen(cmds[i]) + 1);
-    if (cmd_copy == NULL) {
-      perror("malloc cmd_copy failed");
-      strcat(response, "error: malloc cmd_copy failed\r\n");
-      continue;
-    }
-    strcpy(cmd_copy, cmds[i]);
-    char *tokens[KV_MAX] = {0};
-    int token_count = kvs_split_token(cmd_copy, tokens);
-
-    // 3.2 执行指令
-    memset(temp_response, 0, sizeof(temp_response));
-    if (token_count > 0) {
-      kvs_filter_protocol(tokens, token_count, temp_response);
-    } else {
-      strcpy(temp_response, "error: split token failed\r\n");
-    }
-
-    // 3.3 汇总响应（每条指令的响应换行分隔）
-    strcat(response, temp_response);
-
-    // 3.4 清理当前指令的token内存
-    for (int j = 0; j < token_count; j++) {
-      if (tokens[j] != NULL) {
-        kvs_free(tokens[j]);
-      }
-    }
-    kvs_free(cmd_copy);
-  }
-
-  // 4. 清理资源
-  for (int i = 0; i < cmd_count; i++) {
-    if (cmds[i] != NULL) {
-      kvs_free(cmds[i]);
-    }
-  }
-  kvs_free(msg_copy);
-
-  return strlen(response);
-}
-
 // tokens中是不包括\r\n的
-int kvs_filter_protocol(char *tokens[], int count, char *response) {
+int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
   // 安全初始化响应缓冲区的前几个字节
   int len_rsp = 0;
   response[0] = '\0';
+  printf("msg=%s", msg);
+  printf("tokens[0]=%s\n", tokens[0]);
+  printf("tokens[1]=%s\n", tokens[1]);
+  printf("tokens[2]=%s\n", tokens[2]);
 
-  if (tokens == NULL || response == NULL || count == 0) {
+  if (tokens == NULL || response == NULL || count == 0 || msg == NULL) {
     strcpy(response, "error: invalid params\r\n");
     return strlen(response);
   }
@@ -240,7 +159,8 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
   int ret = 0;
   int length = 0;
   char cmd_buf[LINE_MAX] = {0};
-  // printf("filefd=%d\n", filefd);
+  char *async_buf;
+  size_t msg_len;
   switch (cmd) {
 #if ENABLE_ARRAY
   case KVS_CMD_SET:
@@ -251,7 +171,18 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
 #if ENABLE_FULL_PERSIST
       append_mmap_cmd(kvs_log, "set", tokens[1], tokens[2]);
 #endif
-      length = sprintf(response, "ok\r\n");
+#if ENABLE_INCREMENTAL_PERSIST
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
+#endif
+      length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "exist\r\n");
     }
@@ -276,6 +207,17 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
                 tokens[1]);
       }
 #endif
+#if ENABLE_INCREMENTAL_PERSIST
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
+#endif
       length = sprintf(response, "success\r\n");
     }
     break;
@@ -294,7 +236,18 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
                 tokens[1]);
       }
 #endif
-      length = sprintf(response, "ok\r\n");
+#if ENABLE_INCREMENTAL_PERSIST
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
+#endif
+      length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "key not exist\r\n");
     }
@@ -311,11 +264,24 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
 #if ENABLE_RBTREE
   case KVS_CMD_RSET:
     ret = kvs_rbtree_set(global_rbtree, tokens[1], tokens[2]);
+#if ENABLE_FULL_PERSIST
     append_mmap_cmd(kvs_log, "rset", tokens[1], tokens[2]);
+#endif
+#if ENABLE_INCREMENTAL_PERSIST
+    msg_len = strlen(msg);
+    // 分配堆内存（异步IO必须用堆内存！）
+    async_buf = (char *)kvs_malloc(msg_len + 1);
+    if (async_buf) {
+      memcpy(async_buf, msg, msg_len);
+      async_buf[msg_len] = '\0';
+      uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                      async_buf);
+    }
+#endif
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-      length = sprintf(response, "ok\r\n");
+      length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "exist\r\n");
     }
@@ -341,6 +307,17 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
                 tokens[1]);
       }
 #endif
+#if ENABLE_INCREMENTAL_PERSIST
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
+#endif
       length = sprintf(response, "success\r\n");
     }
     break;
@@ -359,7 +336,18 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
                 tokens[1]);
       }
 #endif
-      length = sprintf(response, "ok\r\n");
+#if ENABLE_INCREMENTAL_PERSIST
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
+#endif
+      length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "key not exist\r\n");
     }
@@ -376,11 +364,24 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
 #if ENABLE_HASH
   case KVS_CMD_HSET:
     ret = kvs_hash_set(global_hash, tokens[1], tokens[2]);
+#if ENABLE_FULL_PERSIST
     append_mmap_cmd(kvs_log, "hset", tokens[1], tokens[2]);
+#endif
+#if ENABLE_INCREMENTAL_PERSIST
+    msg_len = strlen(msg);
+    // 分配堆内存（异步IO必须用堆内存！）
+    async_buf = (char *)kvs_malloc(msg_len + 1);
+    if (async_buf) {
+      memcpy(async_buf, msg, msg_len);
+      async_buf[msg_len] = '\0';
+      uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                      async_buf);
+    }
+#endif
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-      length = sprintf(response, "ok\r\n");
+      length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "exist\r\n");
     }
@@ -405,6 +406,17 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
                 tokens[1]);
       }
 #endif
+#if ENABLE_INCREMENTAL_PERSIST
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
+#endif
       length = sprintf(response, "success\r\n");
     }
     break;
@@ -423,7 +435,18 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
                 tokens[1]);
       }
 #endif
-      length = sprintf(response, "ok\r\n");
+#if ENABLE_INCREMENTAL_PERSIST
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
+#endif
+      length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "key not exist\r\n");
     }
@@ -440,11 +463,24 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
 #if ENABLE_SKIPLIST
   case KVS_CMD_SKSET:
     ret = kvs_skiplist_set(global_skiplist, tokens[1], tokens[2]);
+#if ENABLE_FULL_PERSIST
     append_mmap_cmd(kvs_log, "skset", tokens[1], tokens[2]);
+#endif
+#if ENABLE_INCREMENTAL_PERSIST
+    msg_len = strlen(msg);
+    // 分配堆内存（异步IO必须用堆内存！）
+    async_buf = (char *)kvs_malloc(msg_len + 1);
+    if (async_buf) {
+      memcpy(async_buf, msg, msg_len);
+      async_buf[msg_len] = '\0';
+      uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                      async_buf);
+    }
+#endif
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-      length = sprintf(response, "ok\r\n");
+      length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "exist\r\n");
     }
@@ -470,6 +506,17 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
                 tokens[1]);
       }
 #endif
+#if ENABLE_INCREMENTAL_PERSIST
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
+#endif
       length = sprintf(response, "success\r\n");
     }
     break;
@@ -488,7 +535,18 @@ int kvs_filter_protocol(char *tokens[], int count, char *response) {
                 tokens[1]);
       }
 #endif
-      length = sprintf(response, "ok\r\n");
+#if ENABLE_INCREMENTAL_PERSIST
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
+#endif
+      length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "key not exist\r\n");
     }

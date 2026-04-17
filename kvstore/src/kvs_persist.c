@@ -1,447 +1,292 @@
 #include "kvstore.h"
+#include "resp.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/mman.h>
 #include <sys/stat.h> // 新增：用于文件mode定义
 #include <unistd.h>
-const char *file_command[] = {"set", "rset", "hset", "skset"};
+// 文件恢复指令枚举（和你的网络指令一一对应）
 enum {
-  FILE_CMD = 0,
-  FILE_SET = FILE_CMD,
-  FILE_RSET = 1,
-  FILE_HSET = 2,
-  FILE_SKSET = 3,
+  FILE_CMD_START = 0, // 指令起始位
+
+  // 数组结构指令
+  FILE_SET = FILE_CMD_START,
+  FILE_DEL,
+  FILE_MOD,
+
+  // 红黑树结构指令
+  FILE_RSET,
+  FILE_RDEL,
+  FILE_RMOD,
+
+  // 哈希表结构指令
+  FILE_HSET,
+  FILE_HDEL,
+  FILE_HMOD,
+
+  // 跳表结构指令
+  FILE_SKSET,
+  FILE_SKDEL,
+  FILE_SKMOD,
+
+  FILE_CMD_MAX // 指令总数（用于循环匹配）
 };
-// 🔥 只扩容匿名映射（无文件、无Bus error）
-static int resize_anon_mmap(file_content_t *fc) {
-  size_t new_cap = fc->anon_cap * MMAP_GROW_FACTOR;
-  // 匿名映射扩容（MAP_ANON | MAP_PRIVATE，无文件）
-  void *new_anon = mmap(NULL, new_cap, PROT_READ | PROT_WRITE,
-                        MAP_ANON | MAP_PRIVATE, -1, 0);
-  if (new_anon == MAP_FAILED) {
-    perror("anon mmap扩容失败");
+// 【必须配套】指令名称数组（和上面枚举一一对应）
+const char *file_command[] = {"set",  "del",   "mod",   "rset",
+                              "rdel", "rmod",  "hset",  "hdel",
+                              "hmod", "skset", "skdel", "skmod"};
+/**
+ * @brief 初始化：仅打开文件 + 保存基础信息（只open一次）
+ * @param filename 文件名
+ * @param fc 待初始化的结构体
+ * @return 0成功 -1失败
+ */
+int fcInit(const char *filename, file_content_t *fc) {
+  // 1. 先判空！！！（修复顺序错误，否则空指针直接崩溃）
+  if (fc == NULL || filename == NULL) {
     return -1;
   }
-  // 拷贝旧数据
-  if (fc->anon_data) {
-    memcpy(new_anon, fc->anon_data, fc->used_len);
-    munmap(fc->anon_data, fc->anon_cap);
-  }
-  fc->anon_data = new_anon;
-  fc->anon_cap = new_cap;
-  printf("📈 匿名区扩容：%zu → %zu（无文件、无Bus error）\n",
-         fc->anon_cap / MMAP_GROW_FACTOR, fc->anon_cap);
-  return 0;
-}
 
-// 初始化：文件只读映射（不越界）+ 匿名可写映射（安全）
-int map_file_to_struct(const char *filename, file_content_t *fc) {
+  // 2. 初始化结构体
   memset(fc, 0, sizeof(file_content_t));
-  int fd = open(filename, O_RDWR | O_CREAT, 0644);
-  if (fd == -1) {
-    perror("open failed");
-    return -1;
-  }
-  fc->file_fd = fd;
 
-  // 1. 获取文件真实大小（只读）
-  struct stat st;
-  if (fstat(fd, &st) == -1) {
-    perror("fstat failed");
-    close(fd);
-    return -1;
-  }
-  fc->file_size = st.st_size;
-  fc->used_len = fc->file_size;
-
-  // 2. 文件只读映射（只映射文件真实大小，绝不越界）
-  if (fc->file_size > 0) {
-    fc->file_data = mmap(NULL, fc->file_size,
-                         PROT_READ, // 只读！防越界写
-                         MAP_SHARED, fd, 0);
-    if (fc->file_data == MAP_FAILED) {
-      perror("file mmap failed");
-      close(fd);
-      return -1;
-    }
-  }
-  int anon_cap = DEFAULT_CAPACITY;
-  while (anon_cap < fc->file_size) {
-    anon_cap *= MMAP_GROW_FACTOR;
-  }
-  // 3. 初始化匿名可写映射（安全区）
-  fc->anon_cap = anon_cap;
-  fc->anon_data = mmap(NULL, fc->anon_cap, PROT_READ | PROT_WRITE,
-                       MAP_ANON | MAP_PRIVATE, -1, 0);
-  if (fc->anon_data == MAP_FAILED) {
-    perror("anon mmap failed");
-    close(fd);
-    return -1;
-  }
-
-  // 4. 把文件数据拷贝到匿名区（后续只操作匿名区）
-  if (fc->file_size > 0) {
-    memcpy(fc->anon_data, fc->file_data, fc->file_size);
-  }
-
+  // 3. 保存文件名（分配内存）
   fc->filename = kvs_malloc(strlen(filename) + 1);
+  if (fc->filename == NULL) {
+    perror("malloc filename failed");
+    return -1;
+  }
   strcpy(fc->filename, filename);
 
-  printf("✅ 初始化：文件大小=%zu | 匿名区容量=%zu | 有效数据=%zu\n",
-         fc->file_size, fc->anon_cap, fc->used_len);
+  // 4. 仅打开一次文件，保存fd（后续直接复用）
+  fc->file_fd = open(filename, O_RDWR | O_CREAT | O_APPEND, 0644);
+  if (fc->file_fd == -1) {
+    perror("open failed");
+    free(fc->filename); // 失败释放内存
+    fc->filename = NULL;
+    return -1;
+  }
+
+  printf("✅ fcInit：文件打开成功，fd=%d\n", fc->file_fd);
   return 0;
-}
-// 追加：只写匿名区，自动扩容匿名区（无文件、无Bus error）
-int append_mmap_cmd(file_content_t *fc, const char *cmd_type, const char *key,
-                    const char *value) {
-  if (!fc || !cmd_type || !key || !value)
-    return -1;
-
-  char new_line[LINE_MAX];
-  int new_len = snprintf(new_line, sizeof(new_line), "%s %s %s\r\n", cmd_type,
-                         key, value);
-
-  // 匿名区空间不足 → 只扩容匿名区（无文件）
-  while (fc->used_len + new_len > fc->anon_cap) {
-    if (resize_anon_mmap(fc) == -1)
-      return -1;
-  }
-
-  // 🔥 只写匿名区（绝对安全，无Bus error）
-  memcpy((char *)fc->anon_data + fc->used_len, new_line, new_len);
-  fc->used_len += new_len;
-
-  printf("✅ 追加成功：%s", new_line);
-  return 0;
-}
-
-// 删除：只操作匿名区
-int delete_mmap_cmd(file_content_t *fc, const char *del_type, const char *key) {
-  if (!fc || !del_type || !key || fc->used_len == 0)
-    return -1;
-
-  const char *prefix = NULL;
-  if (!strcmp(del_type, "del"))
-    prefix = "set";
-  else if (!strcmp(del_type, "rdel"))
-    prefix = "rset";
-  else if (!strcmp(del_type, "hdel"))
-    prefix = "hset";
-  else if (!strcmp(del_type, "skdel"))
-    prefix = "skset";
-  else
-    return -1;
-
-  char *curr = fc->anon_data;
-  char *end = (char *)fc->anon_data + fc->used_len;
-  char *line_end;
-
-  while ((line_end = memmem(curr, end - curr, "\r\n", 2)) && curr < end) {
-    size_t line_len = line_end - curr;
-    if (line_len == 0) {
-      curr = line_end + 2;
-      continue;
-    }
-
-    char line[LINE_MAX];
-    memcpy(line, curr, line_len);
-    line[line_len] = '\0';
-    char *p = strtok(line, " "), *k = strtok(NULL, " ");
-
-    if (p && k && !strcmp(p, prefix) && !strcmp(k, key)) {
-      size_t del_len = line_len + 2;
-      memmove(curr, line_end + 2, end - (line_end + 2));
-      fc->used_len -= del_len;
-      // printf("✅ 删除成功\n");
-      return 0;
-    }
-    curr = line_end + 2;
-  }
-  fprintf(stderr, "❌ 未找到指令\n");
-  return 1;
-}
-
-// 修改：只操作匿名区
-int modify_mmap_cmd(file_content_t *fc, const char *mod_type, const char *key,
-                    const char *new_value) {
-  if (!fc || !mod_type || !key || !new_value || fc->used_len == 0)
-    return -1;
-
-  const char *prefix = NULL;
-  if (!strcmp(mod_type, "mod"))
-    prefix = "set";
-  else if (!strcmp(mod_type, "rmod"))
-    prefix = "rset";
-  else if (!strcmp(mod_type, "hmod"))
-    prefix = "hset";
-  else if (!strcmp(mod_type, "skmod"))
-    prefix = "skset";
-  else
-    return -1;
-
-  char new_line[LINE_MAX];
-  int new_len = snprintf(new_line, sizeof(new_line), "%s %s %s\r\n", prefix,
-                         key, new_value);
-
-  char *curr = fc->anon_data;
-  char *end = (char *)fc->anon_data + fc->used_len;
-  char *line_end;
-
-  while ((line_end = memmem(curr, end - curr, "\r\n", 2)) && curr < end) {
-    size_t old_line_len = line_end - curr;
-    if (old_line_len == 0) {
-      curr = line_end + 2;
-      continue;
-    }
-
-    char old_line[LINE_MAX];
-    memcpy(old_line, curr, old_line_len);
-    old_line[old_line_len] = '\0';
-    char *p = strtok(old_line, " "), *k = strtok(NULL, " ");
-
-    if (p && k && !strcmp(p, prefix) && !strcmp(k, key)) {
-      size_t old_total_len = old_line_len + 2;
-      int expand = new_len - old_total_len;
-
-      // 新指令更长 → 只扩容匿名区
-      while (expand > 0 && fc->used_len + expand > fc->anon_cap) {
-        if (resize_anon_mmap(fc) == -1)
-          return -1;
-      }
-
-      if (expand > 0) {
-        memmove(curr + new_len, line_end + 2, end - (line_end + 2));
-        fc->used_len += expand;
-      }
-
-      memcpy(curr, new_line, new_len);
-      if (new_len < old_total_len) {
-        memset(curr + new_len, 0, old_total_len - new_len);
-        fc->used_len -= (old_total_len - new_len);
-      }
-      // printf("✅ 修改成功\n");
-      return 0;
-    }
-    curr = line_end + 2;
-  }
-  fprintf(stderr, "❌ 未找到指令\n");
-  return 1;
-}
-
-// 落盘：只把匿名区有效数据写回文件（不扩文件、无ftruncate）
-int sync_mmap_to_file(file_content_t *fc) {
-  if (!fc || !fc->anon_data)
-    return -1;
-
-  // 1. 把文件指针移到开头
-  lseek(fc->file_fd, 0, SEEK_SET);
-  // 2. 只写有效数据（不扩文件，文件大小=used_len）
-  ssize_t written = write(fc->file_fd, fc->anon_data, fc->used_len);
-  if (written != (ssize_t)fc->used_len) {
-    perror("write failed");
-    return -1;
-  }
-  // 3. 截断文件到有效长度（可选，不影响）
-  ftruncate(fc->file_fd, fc->used_len); // 这里用也没事，只缩不扩
-  fsync(fc->file_fd);
-
-  printf("✅ 落盘成功：文件大小=%zu（未扩容）\n", fc->used_len);
-  return 0;
-}
-
-void unmap_file(file_content_t *fc) {
-  if (!fc)
-    return;
-  if (fc->file_data)
-    munmap(fc->file_data, fc->file_size);
-  if (fc->anon_data)
-    munmap(fc->anon_data, fc->anon_cap);
-  if (fc->file_fd != -1)
-    close(fc->file_fd);
-  if (fc->filename)
-    kvs_free(fc->filename);
-  memset(fc, 0, sizeof(file_content_t));
-  printf("✅ 释放完成\n");
 }
 
 /**
- *
- *
- *
- *
- *
- *
- *
- *
+ * @brief 映射文件：直接复用fc中已打开的fd，不重新open！！！
+ * @param fc 已完成fcInit的结构体
+ * @return 0成功 -1失败
  */
-// 以下为恢复文件指令的函数
-int set_protocal(char *tokens[]) {
-  int cmd = FILE_CMD;
-  // 匹配指令类型
-  for (cmd = FILE_CMD; cmd < FILE_SKSET; cmd++) {
+int map_file_to_struct(file_content_t *fc) {
+  // 1. 合法性校验
+  if (fc == NULL || fc->file_fd == -1) {
+    fprintf(stderr, "map_file_to_struct：未初始化或fd无效\n");
+    return -1;
+  }
+
+  // 2. 直接复用已有fd，获取文件大小（无open！）
+  struct stat st;
+  if (fstat(fc->file_fd, &st) == -1) {
+    perror("fstat failed");
+    return -1;
+  }
+  fc->file_size = st.st_size;
+
+  // 3. 文件为空，直接返回（无需mmap）
+  if (fc->file_size == 0) {
+    printf("⚠️  空文件，跳过mmap\n");
+    return 0;
+  }
+
+  // 4. 直接复用fd做mmap映射（核心：无open，纯复用）
+  fc->file_data = mmap(NULL, fc->file_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                       fc->file_fd, // ✅ 复用init中打开的fd
+                       0);
+
+  if (fc->file_data == MAP_FAILED) {
+    perror("mmap failed");
+    return -1;
+  }
+
+  printf("✅ map_file_to_struct：映射成功，大小=%zu 字节\n", fc->file_size);
+  return 0;
+}
+/**
+ * @brief mmap文件恢复指令执行（仅执行SET/DEL/MOD，无回包、无持久化）
+ * @param tokens 解析后的指令参数（tokens[0]=命令, tokens[1]=key,
+ * tokens[2]=value）
+ * @return 0 执行完成
+ */
+static int mmapProtocal(char *tokens[]) {
+  // 安全校验
+  if (tokens == NULL || tokens[0] == NULL) {
+    fprintf(stderr, "mmap恢复：无效指令参数\n");
+    return -1;
+  }
+
+  // 匹配指令类型（完全复用你的协议逻辑）
+  int cmd = FILE_CMD_START;
+  for (cmd = FILE_CMD_START; cmd < FILE_CMD_MAX; cmd++) {
     if (strcmp(tokens[0], file_command[cmd]) == 0) {
       break;
     }
   }
 
-  int ret = 1;
-  // 执行对应数据结构的set操作（修复宏定义）
+  // 仅执行内存操作，无持久化、无响应回发
   switch (cmd) {
 #if ENABLE_ARRAY
+  // 数组：SET/DEL/MOD
   case FILE_SET:
-    ret = kvs_array_set(global_array, tokens[1], tokens[2]);
-    return 0;
+    kvs_array_set(global_array, tokens[1], tokens[2]);
+    break;
+  case FILE_DEL:
+    kvs_array_del(global_array, tokens[1]);
+    break;
+  case FILE_MOD:
+    kvs_array_mod(global_array, tokens[1], tokens[2]);
+    break;
 #endif
+
 #if ENABLE_RBTREE
+  // 红黑树：RSET/RDEL/RMOD
   case FILE_RSET:
-    printf("rset %s %s", tokens[1], tokens[2]);
-    ret = kvs_rbtree_set(global_rbtree, tokens[1], tokens[2]);
-    return 0;
+    kvs_rbtree_set(global_rbtree, tokens[1], tokens[2]);
+    break;
+  case FILE_RDEL:
+    kvs_rbtree_del(global_rbtree, tokens[1]);
+    break;
+  case FILE_RMOD:
+    kvs_rbtree_mod(global_rbtree, tokens[1], tokens[2]);
+    break;
 #endif
+
 #if ENABLE_HASH
+  // 哈希表：HSET/HDEL/HMOD
   case FILE_HSET:
-    ret = kvs_hash_set(global_hash, tokens[1], tokens[2]);
-    return 0;
+    kvs_hash_set(global_hash, tokens[1], tokens[2]);
+    break;
+  case FILE_HDEL:
+    kvs_hash_del(global_hash, tokens[1]);
+    break;
+  case FILE_HMOD:
+    kvs_hash_mod(global_hash, tokens[1], tokens[2]);
+    break;
 #endif
+
 #if ENABLE_SKIPLIST
+  // 跳表：SKSET/SKDEL/SKMOD
   case FILE_SKSET:
-    ret = kvs_skiplist_set(global_skiplist, tokens[1], tokens[2]);
-    return 0;
+    kvs_skiplist_set(global_skiplist, tokens[1], tokens[2]);
+    break;
+  case FILE_SKDEL:
+    kvs_skiplist_del(global_skiplist, tokens[1]);
+    break;
+  case FILE_SKMOD:
+    kvs_skiplist_mod(global_skiplist, tokens[1], tokens[2]);
+    break;
 #endif
+
   default:
-    fprintf(stderr, "不支持的恢复指令：%s\n", tokens[0]);
+    fprintf(stderr, "mmap恢复：不支持的指令 -> %s\n", tokens[0]);
+    break;
+  }
+
+  return 0;
+}
+
+// 配套释放函数（必须调用，防止内存/文件句柄泄漏）
+void free_file_content(file_content_t *fc) {
+  if (fc == NULL)
+    return;
+
+  // 1. 解除mmap映射
+  if (fc->file_data != NULL && fc->file_size > 0) {
+    munmap(fc->file_data, fc->file_size);
+    fc->file_data = NULL;
+  }
+
+  // 2. 关闭文件描述符
+  if (fc->file_fd != -1) {
+    close(fc->file_fd);
+    fc->file_fd = -1;
+  }
+
+  // 3. 释放文件名内存
+  if (fc->filename != NULL) {
+    free(fc->filename);
+    fc->filename = NULL;
+  }
+
+  // 4. 清空结构体
+  memset(fc, 0, sizeof(file_content_t));
+  printf("✅ 资源释放完成\n");
+}
+
+/**
+ * @brief 从mmap映射的文件中读取所有resp指令(set/del/mod)并执行
+ * @param fc 已mmap映射完成的文件结构体
+ * @return 0成功，-1失败
+ */
+int replay_commands_from_mmap(file_content_t *fc) {
+  // 空文件直接返回
+  if (fc->file_size == 0 || fc->file_data == NULL) {
+    printf("✅ 文件为空，无指令需要执行\n");
     return 0;
   }
-  return ret;
-}
-static void free_kv_recover_result(KvRecoverResult *result) {
-  if (result == NULL) {
-    return;
-  }
-  if (result->cmds != NULL) {
-    for (int i = 0; i < result->cmd_count; i++) {
-      if (result->cmds[i] != NULL) {
-        kvs_free(result->cmds[i]);
-      }
+
+  // 数据源：mmap映射的文件指令区 + 游标（替代原网络接收缓冲区）
+  char *mmap_data = (char *)fc->file_data;
+  size_t total_size = fc->file_size;
+  size_t processed = 0; // 已处理的指令字节数
+
+  printf("🔄 开始执行mmap文件中的指令，总大小：%zu 字节\n", total_size);
+
+  // ====================== 完全复用你的原解析+执行循环逻辑
+  // ======================
+  while (processed < total_size) {
+    char *curr_data = mmap_data + processed; // 当前未处理的指令起始位置
+    int oneRespLen = getOneRespLen(curr_data);
+
+    // 无效指令/解析失败，退出
+    if (oneRespLen <= 0 || (processed + oneRespLen) > total_size) {
+      fprintf(stderr, "❌ 指令解析失败，跳过剩余数据\n");
+      break;
     }
-    kvs_free(result->cmds);
-  }
-  kvs_free(result);
-}
-/**
- * @brief 从日志文件获得KV指令,返回包含指令数和指令内容的结构体指针
- * @return 成功：返回KvRecoverResult结构体指针（需调用者手动释放)；
- *         失败/空文件：返回NULL（空文件可通过perror排查,或补充日志)
- */
-// 恢复：只读文件真实大小，无null，不读mmap多余空间
-KvRecoverResult *kvs_recover_data(const char *file) {
-  KvRecoverResult *result = kvs_malloc(sizeof(KvRecoverResult));
-  result->cmd_count = 0;
-  result->cmds = NULL;
 
-  int fd = open(file, O_RDONLY);
-  if (fd == -1) {
-    printf("空文件\n");
-    return result;
-  }
+    // -------------- 复用：指令解析 --------------
+    char *cmd = NULL;
+    char *params[10] = {0};
+    int paramCnt = 0;
+    StoreType type;
+    int parseRet = parseRespKv(curr_data, &cmd, &params[0], &paramCnt, &type);
 
-  // 🔥 只读文件真实大小（无null）
-  struct stat st;
-  fstat(fd, &st);
-  size_t file_size = st.st_size;
-  if (file_size == 0) {
-    close(fd);
-    return result;
-  }
-
-  // 只读取有效数据，无预分配null
-  char *buf = kvs_malloc(file_size + 1);
-  read(fd, buf, file_size);
-  close(fd);
-  buf[file_size] = '\0';
-
-  // 按行分割指令
-  result->cmds = kvs_malloc(MAX_RECOVER_CMD * sizeof(char *));
-  char *start = buf;
-  char *sep;
-  while ((sep = strstr(start, "\r\n"))) {
-    int len = sep - start;
-    result->cmds[result->cmd_count] = kvs_malloc(len + 1);
-    strncpy(result->cmds[result->cmd_count], start, len);
-    result->cmds[result->cmd_count][len] = '\0';
-    result->cmd_count++;
-    start = sep + 2;
-  }
-  kvs_free(buf);
-  return result;
-}
-// 5. 核心：执行恢复的所有指令
-int execute_recovered_cmds(const char *file) {
-  // 步骤1：恢复日志中的指令
-  printf("进入execute_recovered_cmds\n");
-  KvRecoverResult *recover_result = kvs_recover_data(file);
-  if (recover_result == NULL) {
-    fprintf(stderr, "指令恢复失败或日志文件为空\n");
-    return -1;
-  }
-  printf("成功恢复 %d 条指令,开始执行...\n", recover_result->cmd_count);
-
-  // 步骤2：遍历每条指令执行
-  const int MAX_TOKENS = 10; // 单条指令最多分割为10个token（按需调整)
-  printf("recover_result->cmd_count=%d", recover_result->cmd_count);
-  for (int i = 0; i < recover_result->cmd_count; i++) {
-    char *curr_cmd = recover_result->cmds[i];
-    if (curr_cmd == NULL) { // 新增：空指令跳过
-      // fprintf(stderr, "指令 %d 为空,跳过\n", i + 1);
-      continue;
+    if (parseRet == -1)
+      break;
+    if (parseRet < 0) {
+      fprintf(stderr, "❌ 指令格式错误，终止执行\n");
+      return -1;
     }
-    // printf("\n---------- 执行指令 %d ----------\n", i + 1);
-    // printf("原始指令：%s\n", curr_cmd);
 
-    char *tokens[MAX_TOKENS] = {}; // 空初始化器（符合VLA规则)
+    // -------------- 复用：构造参数数组 --------------
+    char *tokens[20] = {0};
+    tokens[0] = cmd;
+    for (int i = 0; i < paramCnt; i++)
+      tokens[i + 1] = params[i];
 
-    // 手动初始化：tokens所有指针置NULL,response所有字节置0
-    memset(tokens, 0, sizeof(tokens)); // 指针数组置NULL（0等价于NULL)
+    // ====================== 核心修改 ======================
+    // 仅传入 tokens 数组，删除所有多余参数
+    mmapProtocal(tokens);
+    // ======================================================
 
-    // 2.2 复制指令（避免strtok修改原指令内容)
-    char cmd_copy[strlen(curr_cmd) + 1];
-    strcpy(cmd_copy, curr_cmd);
+    // -------------- 复用：释放解析内存 --------------
+    kvs_free(cmd);
+    for (int i = 0; i < paramCnt; i++)
+      kvs_free(params[i]);
 
-    // 2.3 分割指令为token
-    int token_count = kvs_split_token(cmd_copy, tokens);
-    if (token_count < 0) {
-      fprintf(stderr, "指令 %d 分割失败\n", i + 1);
-      // 新增：清理tokens避免泄漏
-      for (int j = 0; j < MAX_TOKENS; j++) {
-        if (tokens[j] != NULL) {
-          kvs_free(tokens[j]);
-        }
-      }
-      continue;
-    }
-    // printf("分割后token数量：%d\n", token_count);
-    // for (int j = 0; j < token_count; j++) {
-    //   printf("token[%d]：%s\n", j, tokens[j]);
-    // }
-
-    // 2.4 执行指令（调用你的kvs_filter_protocol)
-    int ret = set_protocal(tokens);
-    if (ret == 0) {
-      // printf("指令执行成功\n"); // 修正：response带\r\n,不用加\n
-    } else {
-      fprintf(stderr, "指令执行失败\n");
-    }
-    // 2.5 清理当前指令的token内存（避免泄漏)
-    for (int j = 0; j < token_count; j++) {
-      if (tokens[j] != NULL) {
-        kvs_free(tokens[j]);
-        tokens[j] = NULL; // 新增：置NULL避免重复kvs_free
-      }
-    }
+    // -------------- 游标前移：消耗已处理指令 --------------
+    processed += oneRespLen;
+    printf("✅ 执行完成1条指令，已处理：%zu/%zu 字节\n", processed, total_size);
   }
 
-  // 步骤3：释放恢复结果的内存
-  free_kv_recover_result(recover_result);
-  printf("\n所有指令执行完成！\n");
+  printf("🎉 所有mmap文件中的指令执行完毕！\n");
   return 0;
 }
