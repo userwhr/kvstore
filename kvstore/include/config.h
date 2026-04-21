@@ -1,29 +1,51 @@
-#define ENABLE_FULL_PERSIST 0
-#define ENABLE_INCREMENTAL_PERSIST 1
+#ifndef CONFIG_H
+#define CONFIG_H
 
-#define LOG_PATH "./log/full_log.txt" // 日志位置
-#define LOG_PATH_ICR "./log/icr_log.txt"
-#define MAX_RECOVER_CMD 10000 // 日志里能存储的最大文件数
-#define LINE_MAX 1024 * 1024  // SET KEY VALUE 这一个指令的最大长度
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-// mmap
-#define DEFAULT_CAPACITY 4096 * 2 // 初始给匿名mmap分配的空间
-#define MMAP_GROW_FACTOR 2        // 不够用时翻倍扩容
+// 配置结构体：替代你原来的所有宏
+typedef struct {
+  // 持久化
+  int enable_full_persist;
+  int enable_incremental_persist;
 
-// reactor 发送接收缓冲区大小
-#define BUFFER_LENGTH 1024 * 1024
+  // 路径（固定大小，避免内存泄漏）
+  char log_path[256];
+  char log_path_icr[256];
+  char cmd_delim[16];
 
-#define CMD_DELIM "&&" // 新增：多条指令分隔符
-#define MAX_CMD_NUM 10000
+  // 数值配置
+  int max_recover_cmd;
+  int line_max;
+  int default_capacity;
+  int mmap_grow_factor;
+  int buffer_length;
+  int max_cmd_num;
 
-// 启动四种存储模式
-#define ENABLE_RBTREE 1
-#define ENABLE_ARRAY 1
-#define ENABLE_HASH 1
-#define ENABLE_SKIPLIST 1
+  // 存储引擎
+  int enable_rbtree;
+  int enable_array;
+  int enable_hash;
+  int enable_skiplist;
 
-// 启动内存池
-#define ENABLE_SLAB_POOL 1
+  // 内存池
+  int enable_slab_pool;
 
-// CLIENT PORT
-#define PORT 2000
+  // 端口
+  int port;
+} KvConfig;
+
+// 全局配置变量（替代宏，程序中直接使用）
+extern KvConfig g_config;
+
+/**
+ * @brief 加载并解析配置文件
+ * @param config_path 配置文件路径（如 "./kvstore.conf"）
+ * @return 0成功，-1失败
+ */
+int load_config(const char *config_path);
+
+#endif // CONFIG_H

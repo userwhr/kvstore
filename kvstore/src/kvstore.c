@@ -1,5 +1,7 @@
 #include "kvstore.h"
+#include "config.h"
 #include "rbtree.h"
+#include "traversal.h"
 #include <fcntl.h>
 #include <malloc.h>
 #include <stdio.h>
@@ -20,56 +22,49 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response);
 int kvs_split_multi_cmd(char *msg, char *cmds[]);
 
 // 原有全局变量定义...
-#if ENABLE_ARRAY
 kvs_array_t *global_array = NULL;
-#endif
-#if ENABLE_RBTREE
 kvs_rbtree_t *global_rbtree = NULL;
-#endif
-#if ENABLE_HASH
 kvs_hash_t *global_hash = NULL;
-#endif
-#if ENABLE_SKIPLIST
 kvs_skiplist_t *global_skiplist = NULL;
-#endif
 
 // 原有kvs_init函数...
 void kvs_init(void) {
-#if ENABLE_SLAB_POOL
-  kvs_init_slots();
-#endif
-#if ENABLE_ARRAY
-  global_array = (kvs_array_t *)malloc(sizeof(kvs_array_t));
-  if (global_array == NULL) {
-    perror("malloc global_array failed");
-    exit(-1);
+  if (g_config.enable_slab_pool) {
+    printf("初始化内存池成功\n");
+    kvs_init_slots();
   }
-  kvs_array_creat(global_array);
-#endif
-#if ENABLE_RBTREE
-  global_rbtree = (kvs_rbtree_t *)malloc(sizeof(kvs_rbtree_t));
-  if (global_rbtree == NULL) {
-    perror("malloc global_rbtree failed");
-    exit(-1);
+  if (g_config.enable_array) {
+    global_array = (kvs_array_t *)malloc(sizeof(kvs_array_t));
+    if (global_array == NULL) {
+      perror("malloc global_array failed");
+      exit(-1);
+    }
+    kvs_array_creat(global_array);
   }
-  kvs_rbtree_create(global_rbtree);
-#endif
-#if ENABLE_HASH
-  global_hash = (kvs_hash_t *)malloc(sizeof(kvs_hash_t));
-  if (global_hash == NULL) {
-    perror("malloc global_hash failed");
-    exit(-1);
+  if (g_config.enable_rbtree) {
+    global_rbtree = (kvs_rbtree_t *)malloc(sizeof(kvs_rbtree_t));
+    if (global_rbtree == NULL) {
+      perror("malloc global_rbtree failed");
+      exit(-1);
+    }
+    kvs_rbtree_create(global_rbtree);
   }
-  kvs_hash_creat(global_hash);
-#endif
-#if ENABLE_SKIPLIST
-  global_skiplist = (kvs_skiplist_t *)malloc(sizeof(kvs_skiplist_t));
-  if (global_skiplist == NULL) {
-    perror("malloc global_skiplist failed");
-    exit(-1);
+  if (g_config.enable_hash) {
+    global_hash = (kvs_hash_t *)malloc(sizeof(kvs_hash_t));
+    if (global_hash == NULL) {
+      perror("malloc global_hash failed");
+      exit(-1);
+    }
+    kvs_hash_creat(global_hash);
   }
-  kvs_skiplist_creat(global_skiplist);
-#endif
+  if (g_config.enable_skiplist) {
+    global_skiplist = (kvs_skiplist_t *)malloc(sizeof(kvs_skiplist_t));
+    if (global_skiplist == NULL) {
+      perror("malloc global_skiplist failed");
+      exit(-1);
+    }
+    kvs_skiplist_creat(global_skiplist);
+  }
 }
 
 int kvs_split_token(char *msg, char *tokens[]) {
@@ -101,8 +96,8 @@ int kvs_split_multi_cmd(char *msg, char *cmds[]) {
   }
 
   int idx = 0;
-  char *cmd = strtok(msg, CMD_DELIM);
-  while (cmd != NULL && idx < MAX_CMD_NUM) {
+  char *cmd = strtok(msg, g_config.cmd_delim);
+  while (cmd != NULL && idx < g_config.max_cmd_num) {
     // 去除指令前后的空格（兼容"set a b && get a"和"set a b&&get a"）
     char *trimmed_cmd = cmd;
     // 跳过前导空格
@@ -126,7 +121,7 @@ int kvs_split_multi_cmd(char *msg, char *cmds[]) {
     }
     strcpy(cmds[idx], trimmed_cmd);
     idx++;
-    cmd = strtok(NULL, CMD_DELIM);
+    cmd = strtok(NULL, g_config.cmd_delim);
   }
   return idx;
 }
@@ -135,10 +130,6 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
   // 安全初始化响应缓冲区的前几个字节
   int len_rsp = 0;
   response[0] = '\0';
-  printf("msg=%s", msg);
-  printf("tokens[0]=%s\n", tokens[0]);
-  printf("tokens[1]=%s\n", tokens[1]);
-  printf("tokens[2]=%s\n", tokens[2]);
 
   if (tokens == NULL || response == NULL || count == 0 || msg == NULL) {
     strcpy(response, "error: invalid params\r\n");
@@ -158,30 +149,25 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   int ret = 0;
   int length = 0;
-  char cmd_buf[LINE_MAX] = {0};
   char *async_buf;
   size_t msg_len;
   switch (cmd) {
-#if ENABLE_ARRAY
   case KVS_CMD_SET:
     ret = kvs_array_set(global_array, tokens[1], tokens[2]);
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-#if ENABLE_FULL_PERSIST
-      append_mmap_cmd(kvs_log, "set", tokens[1], tokens[2]);
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-      msg_len = strlen(msg);
-      // 分配堆内存（异步IO必须用堆内存！）
-      async_buf = (char *)kvs_malloc(msg_len + 1);
-      if (async_buf) {
-        memcpy(async_buf, msg, msg_len);
-        async_buf[msg_len] = '\0';
-        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                        async_buf);
+      if (g_config.enable_incremental_persist == 1) {
+        msg_len = strlen(msg);
+        // 分配堆内存（异步IO必须用堆内存！）
+        async_buf = (char *)kvs_malloc(msg_len + 1);
+        if (async_buf) {
+          memcpy(async_buf, msg, msg_len);
+          async_buf[msg_len] = '\0';
+          uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
+                          writeCallback, async_buf);
+        }
       }
-#endif
       length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "exist\r\n");
@@ -200,24 +186,17 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
     if (ret == -1) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-#if ENABLE_FULL_PERSIST
-      int log_ret = delete_mmap_cmd(kvs_log, "del", tokens[1]);
-      if (log_ret != 0) {
-        fprintf(stderr, "警告：删除key=%s的内存数据成功，但mmap清理失败\n",
-                tokens[1]);
+      if (g_config.enable_incremental_persist == 1) {
+        msg_len = strlen(msg);
+        // 分配堆内存（异步IO必须用堆内存！）
+        async_buf = (char *)kvs_malloc(msg_len + 1);
+        if (async_buf) {
+          memcpy(async_buf, msg, msg_len);
+          async_buf[msg_len] = '\0';
+          uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
+                          writeCallback, async_buf);
+        }
       }
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-      msg_len = strlen(msg);
-      // 分配堆内存（异步IO必须用堆内存！）
-      async_buf = (char *)kvs_malloc(msg_len + 1);
-      if (async_buf) {
-        memcpy(async_buf, msg, msg_len);
-        async_buf[msg_len] = '\0';
-        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                        async_buf);
-      }
-#endif
       length = sprintf(response, "success\r\n");
     }
     break;
@@ -226,27 +205,18 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-#if ENABLE_FULL_PERSIST
-      int log_ret = modify_mmap_cmd(kvs_log, "mod", tokens[1], tokens[2]);
-      if (log_ret == 1) {
-        fprintf(stderr, "警告:修改key=%s的内存数据成功,但mmap修改失败\n",
-                tokens[1]);
-      } else if (log_ret == 0) {
-        fprintf(stderr, "提示:内存中key=%s已修改,但mmap中未找到对应的set指令\n",
-                tokens[1]);
+
+      if (g_config.enable_incremental_persist == 1) {
+        msg_len = strlen(msg);
+        // 分配堆内存（异步IO必须用堆内存！）
+        async_buf = (char *)kvs_malloc(msg_len + 1);
+        if (async_buf) {
+          memcpy(async_buf, msg, msg_len);
+          async_buf[msg_len] = '\0';
+          uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
+                          writeCallback, async_buf);
+        }
       }
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-      msg_len = strlen(msg);
-      // 分配堆内存（异步IO必须用堆内存！）
-      async_buf = (char *)kvs_malloc(msg_len + 1);
-      if (async_buf) {
-        memcpy(async_buf, msg, msg_len);
-        async_buf[msg_len] = '\0';
-        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                        async_buf);
-      }
-#endif
       length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "key not exist\r\n");
@@ -260,24 +230,19 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
       length = sprintf(response, "key not exist\r\n");
     }
     break;
-#endif
-#if ENABLE_RBTREE
   case KVS_CMD_RSET:
     ret = kvs_rbtree_set(global_rbtree, tokens[1], tokens[2]);
-#if ENABLE_FULL_PERSIST
-    append_mmap_cmd(kvs_log, "rset", tokens[1], tokens[2]);
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-    msg_len = strlen(msg);
-    // 分配堆内存（异步IO必须用堆内存！）
-    async_buf = (char *)kvs_malloc(msg_len + 1);
-    if (async_buf) {
-      memcpy(async_buf, msg, msg_len);
-      async_buf[msg_len] = '\0';
-      uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                      async_buf);
+    if (g_config.enable_incremental_persist == 1) {
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
     }
-#endif
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
@@ -300,24 +265,18 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
     if (ret == -1) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-#if ENABLE_FULL_PERSIST
-      int log_ret = delete_mmap_cmd(kvs_log, "rdel", tokens[1]);
-      if (log_ret != 0) {
-        fprintf(stderr, "警告：删除key=%s的内存数据成功，但mmap清理失败\n",
-                tokens[1]);
+      if (g_config.enable_incremental_persist == 1) {
+
+        msg_len = strlen(msg);
+        // 分配堆内存（异步IO必须用堆内存！）
+        async_buf = (char *)kvs_malloc(msg_len + 1);
+        if (async_buf) {
+          memcpy(async_buf, msg, msg_len);
+          async_buf[msg_len] = '\0';
+          uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
+                          writeCallback, async_buf);
+        }
       }
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-      msg_len = strlen(msg);
-      // 分配堆内存（异步IO必须用堆内存！）
-      async_buf = (char *)kvs_malloc(msg_len + 1);
-      if (async_buf) {
-        memcpy(async_buf, msg, msg_len);
-        async_buf[msg_len] = '\0';
-        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                        async_buf);
-      }
-#endif
       length = sprintf(response, "success\r\n");
     }
     break;
@@ -326,27 +285,17 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-#if ENABLE_FULL_PERSIST
-      int log_ret = modify_mmap_cmd(kvs_log, "rmod", tokens[1], tokens[2]);
-      if (log_ret == 1) {
-        fprintf(stderr, "警告:修改key=%s的内存数据成功,但mmap修改失败\n",
-                tokens[1]);
-      } else if (log_ret == 0) {
-        fprintf(stderr, "提示:内存中key=%s已修改,但mmap中未找到对应的set指令\n",
-                tokens[1]);
+      if (g_config.enable_incremental_persist == 1) {
+        msg_len = strlen(msg);
+        // 分配堆内存（异步IO必须用堆内存！）
+        async_buf = (char *)kvs_malloc(msg_len + 1);
+        if (async_buf) {
+          memcpy(async_buf, msg, msg_len);
+          async_buf[msg_len] = '\0';
+          uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
+                          writeCallback, async_buf);
+        }
       }
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-      msg_len = strlen(msg);
-      // 分配堆内存（异步IO必须用堆内存！）
-      async_buf = (char *)kvs_malloc(msg_len + 1);
-      if (async_buf) {
-        memcpy(async_buf, msg, msg_len);
-        async_buf[msg_len] = '\0';
-        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                        async_buf);
-      }
-#endif
       length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "key not exist\r\n");
@@ -360,24 +309,20 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
       length = sprintf(response, "key not exist\r\n");
     }
     break;
-#endif
-#if ENABLE_HASH
   case KVS_CMD_HSET:
     ret = kvs_hash_set(global_hash, tokens[1], tokens[2]);
-#if ENABLE_FULL_PERSIST
-    append_mmap_cmd(kvs_log, "hset", tokens[1], tokens[2]);
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-    msg_len = strlen(msg);
-    // 分配堆内存（异步IO必须用堆内存！）
-    async_buf = (char *)kvs_malloc(msg_len + 1);
-    if (async_buf) {
-      memcpy(async_buf, msg, msg_len);
-      async_buf[msg_len] = '\0';
-      uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                      async_buf);
+    if (g_config.enable_incremental_persist == 1) {
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
     }
-#endif
+
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
@@ -399,24 +344,17 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
     if (ret == -1) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-#if ENABLE_FULL_PERSIST
-      int log_ret = delete_mmap_cmd(kvs_log, "hdel", tokens[1]);
-      if (log_ret != 0) {
-        fprintf(stderr, "警告：删除key=%s的内存数据成功，但mmap清理失败\n",
-                tokens[1]);
+      if (g_config.enable_incremental_persist == 1) {
+        msg_len = strlen(msg);
+        // 分配堆内存（异步IO必须用堆内存！）
+        async_buf = (char *)kvs_malloc(msg_len + 1);
+        if (async_buf) {
+          memcpy(async_buf, msg, msg_len);
+          async_buf[msg_len] = '\0';
+          uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
+                          writeCallback, async_buf);
+        }
       }
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-      msg_len = strlen(msg);
-      // 分配堆内存（异步IO必须用堆内存！）
-      async_buf = (char *)kvs_malloc(msg_len + 1);
-      if (async_buf) {
-        memcpy(async_buf, msg, msg_len);
-        async_buf[msg_len] = '\0';
-        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                        async_buf);
-      }
-#endif
       length = sprintf(response, "success\r\n");
     }
     break;
@@ -425,27 +363,17 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-#if ENABLE_FULL_PERSIST
-      int log_ret = modify_mmap_cmd(kvs_log, "hmod", tokens[1], tokens[2]);
-      if (log_ret == 1) {
-        fprintf(stderr, "警告:修改key=%s的内存数据成功,但mmap修改失败\n",
-                tokens[1]);
-      } else if (log_ret == 0) {
-        fprintf(stderr, "提示:内存中key=%s已修改,但mmap中未找到对应的set指令\n",
-                tokens[1]);
+      if (g_config.enable_incremental_persist == 1) {
+        msg_len = strlen(msg);
+        // 分配堆内存（异步IO必须用堆内存！）
+        async_buf = (char *)kvs_malloc(msg_len + 1);
+        if (async_buf) {
+          memcpy(async_buf, msg, msg_len);
+          async_buf[msg_len] = '\0';
+          uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
+                          writeCallback, async_buf);
+        }
       }
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-      msg_len = strlen(msg);
-      // 分配堆内存（异步IO必须用堆内存！）
-      async_buf = (char *)kvs_malloc(msg_len + 1);
-      if (async_buf) {
-        memcpy(async_buf, msg, msg_len);
-        async_buf[msg_len] = '\0';
-        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                        async_buf);
-      }
-#endif
       length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "key not exist\r\n");
@@ -459,24 +387,19 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
       length = sprintf(response, "key not exist\r\n");
     }
     break;
-#endif
-#if ENABLE_SKIPLIST
   case KVS_CMD_SKSET:
     ret = kvs_skiplist_set(global_skiplist, tokens[1], tokens[2]);
-#if ENABLE_FULL_PERSIST
-    append_mmap_cmd(kvs_log, "skset", tokens[1], tokens[2]);
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-    msg_len = strlen(msg);
-    // 分配堆内存（异步IO必须用堆内存！）
-    async_buf = (char *)kvs_malloc(msg_len + 1);
-    if (async_buf) {
-      memcpy(async_buf, msg, msg_len);
-      async_buf[msg_len] = '\0';
-      uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                      async_buf);
+    if (g_config.enable_incremental_persist == 1) {
+      msg_len = strlen(msg);
+      // 分配堆内存（异步IO必须用堆内存！）
+      async_buf = (char *)kvs_malloc(msg_len + 1);
+      if (async_buf) {
+        memcpy(async_buf, msg, msg_len);
+        async_buf[msg_len] = '\0';
+        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
+                        async_buf);
+      }
     }
-#endif
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
@@ -499,24 +422,17 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
     if (ret == -1) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-#if ENABLE_FULL_PERSIST
-      int log_ret = delete_mmap_cmd(kvs_log, "skdel", tokens[1]);
-      if (log_ret != 0) {
-        fprintf(stderr, "警告：删除key=%s的内存数据成功，但mmap清理失败\n",
-                tokens[1]);
+      if (g_config.enable_incremental_persist == 1) {
+        msg_len = strlen(msg);
+        // 分配堆内存（异步IO必须用堆内存！）
+        async_buf = (char *)kvs_malloc(msg_len + 1);
+        if (async_buf) {
+          memcpy(async_buf, msg, msg_len);
+          async_buf[msg_len] = '\0';
+          uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
+                          writeCallback, async_buf);
+        }
       }
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-      msg_len = strlen(msg);
-      // 分配堆内存（异步IO必须用堆内存！）
-      async_buf = (char *)kvs_malloc(msg_len + 1);
-      if (async_buf) {
-        memcpy(async_buf, msg, msg_len);
-        async_buf[msg_len] = '\0';
-        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                        async_buf);
-      }
-#endif
       length = sprintf(response, "success\r\n");
     }
     break;
@@ -525,27 +441,17 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
     if (ret < 0) {
       length = sprintf(response, "error\r\n");
     } else if (ret == 0) {
-#if ENABLE_FULL_PERSIST
-      int log_ret = modify_mmap_cmd(kvs_log, "skmod", tokens[1], tokens[2]);
-      if (log_ret == 1) {
-        fprintf(stderr, "警告:修改key=%s的内存数据成功,但mmap修改失败\n",
-                tokens[1]);
-      } else if (log_ret == 0) {
-        fprintf(stderr, "提示:内存中key=%s已修改,但mmap中未找到对应的set指令\n",
-                tokens[1]);
+      if (g_config.enable_incremental_persist == 1) {
+        msg_len = strlen(msg);
+        // 分配堆内存（异步IO必须用堆内存！）
+        async_buf = (char *)kvs_malloc(msg_len + 1);
+        if (async_buf) {
+          memcpy(async_buf, msg, msg_len);
+          async_buf[msg_len] = '\0';
+          uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
+                          writeCallback, async_buf);
+        }
       }
-#endif
-#if ENABLE_INCREMENTAL_PERSIST
-      msg_len = strlen(msg);
-      // 分配堆内存（异步IO必须用堆内存！）
-      async_buf = (char *)kvs_malloc(msg_len + 1);
-      if (async_buf) {
-        memcpy(async_buf, msg, msg_len);
-        async_buf[msg_len] = '\0';
-        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0, writeCallback,
-                        async_buf);
-      }
-#endif
       length = sprintf(response, "OK\r\n");
     } else if (ret > 0) {
       length = sprintf(response, "key not exist\r\n");
@@ -559,7 +465,12 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
       length = sprintf(response, "key not exist\r\n");
     }
     break;
+  case SAVE:
+#if ENABLE_FULL_PERSIST
+    dump_all_to_disk();
+    sprintf(response, "OK\r\n");
 #endif
+    break;
   default:
     length = sprintf(response, "error cmd\r\n");
     break;

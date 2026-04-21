@@ -1,3 +1,4 @@
+#include "config.h"
 #include "kvstore.h"
 #include "resp.h"
 #include <fcntl.h>
@@ -5,6 +6,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h> // 新增：用于文件mode定义
 #include <unistd.h>
+
 // 文件恢复指令枚举（和你的网络指令一一对应）
 enum {
   FILE_CMD_START = 0, // 指令起始位
@@ -42,7 +44,7 @@ const char *file_command[] = {"set",  "del",   "mod",   "rset",
  * @return 0成功 -1失败
  */
 int fcInit(const char *filename, file_content_t *fc) {
-  // 1. 先判空！！！（修复顺序错误，否则空指针直接崩溃）
+  // 1. 先判空！！！
   if (fc == NULL || filename == NULL) {
     return -1;
   }
@@ -58,16 +60,34 @@ int fcInit(const char *filename, file_content_t *fc) {
   }
   strcpy(fc->filename, filename);
 
-  // 4. 仅打开一次文件，保存fd（后续直接复用）
+  // 4. 打开文件
   fc->file_fd = open(filename, O_RDWR | O_CREAT | O_APPEND, 0644);
   if (fc->file_fd == -1) {
     perror("open failed");
-    free(fc->filename); // 失败释放内存
+    free(fc->filename);
     fc->filename = NULL;
     return -1;
   }
 
-  printf("✅ fcInit：文件打开成功，fd=%d\n", fc->file_fd);
+  // ===================== 新增：获取文件大小 =====================
+  struct stat file_stat;
+  // fstat：通过文件描述符获取文件元信息（大小、权限、时间等）
+  if (fstat(fc->file_fd, &file_stat) == -1) {
+    perror("fstat get file size failed");
+    // 失败必须清理资源！关闭fd、释放文件名内存
+    close(fc->file_fd);
+    free(fc->filename);
+    fc->filename = NULL;
+    fc->file_fd = -1;
+    return -1;
+  }
+
+  // 赋值文件真实大小到结构体
+  fc->file_size = (size_t)file_stat.st_size;
+  // ============================================================
+
+  printf("✅ fcInit：文件打开成功，fd=%d，文件大小=%zu 字节\n", fc->file_fd,
+         fc->file_size);
   return 0;
 }
 
@@ -133,7 +153,6 @@ static int mmapProtocal(char *tokens[]) {
 
   // 仅执行内存操作，无持久化、无响应回发
   switch (cmd) {
-#if ENABLE_ARRAY
   // 数组：SET/DEL/MOD
   case FILE_SET:
     kvs_array_set(global_array, tokens[1], tokens[2]);
@@ -144,9 +163,7 @@ static int mmapProtocal(char *tokens[]) {
   case FILE_MOD:
     kvs_array_mod(global_array, tokens[1], tokens[2]);
     break;
-#endif
 
-#if ENABLE_RBTREE
   // 红黑树：RSET/RDEL/RMOD
   case FILE_RSET:
     kvs_rbtree_set(global_rbtree, tokens[1], tokens[2]);
@@ -157,9 +174,7 @@ static int mmapProtocal(char *tokens[]) {
   case FILE_RMOD:
     kvs_rbtree_mod(global_rbtree, tokens[1], tokens[2]);
     break;
-#endif
 
-#if ENABLE_HASH
   // 哈希表：HSET/HDEL/HMOD
   case FILE_HSET:
     kvs_hash_set(global_hash, tokens[1], tokens[2]);
@@ -170,9 +185,7 @@ static int mmapProtocal(char *tokens[]) {
   case FILE_HMOD:
     kvs_hash_mod(global_hash, tokens[1], tokens[2]);
     break;
-#endif
 
-#if ENABLE_SKIPLIST
   // 跳表：SKSET/SKDEL/SKMOD
   case FILE_SKSET:
     kvs_skiplist_set(global_skiplist, tokens[1], tokens[2]);
@@ -183,7 +196,6 @@ static int mmapProtocal(char *tokens[]) {
   case FILE_SKMOD:
     kvs_skiplist_mod(global_skiplist, tokens[1], tokens[2]);
     break;
-#endif
 
   default:
     fprintf(stderr, "mmap恢复：不支持的指令 -> %s\n", tokens[0]);
@@ -226,7 +238,7 @@ void free_file_content(file_content_t *fc) {
  * @param fc 已mmap映射完成的文件结构体
  * @return 0成功，-1失败
  */
-int replay_commands_from_mmap(file_content_t *fc) {
+int AOF_commands_from_mmap(file_content_t *fc) {
   // 空文件直接返回
   if (fc->file_size == 0 || fc->file_data == NULL) {
     printf("✅ 文件为空，无指令需要执行\n");
@@ -272,10 +284,8 @@ int replay_commands_from_mmap(file_content_t *fc) {
     for (int i = 0; i < paramCnt; i++)
       tokens[i + 1] = params[i];
 
-    // ====================== 核心修改 ======================
-    // 仅传入 tokens 数组，删除所有多余参数
+    // 核心执行
     mmapProtocal(tokens);
-    // ======================================================
 
     // -------------- 复用：释放解析内存 --------------
     kvs_free(cmd);
@@ -284,9 +294,106 @@ int replay_commands_from_mmap(file_content_t *fc) {
 
     // -------------- 游标前移：消耗已处理指令 --------------
     processed += oneRespLen;
-    printf("✅ 执行完成1条指令，已处理：%zu/%zu 字节\n", processed, total_size);
   }
 
   printf("🎉 所有mmap文件中的指令执行完毕！\n");
+  return 0;
+}
+
+int snapshot_restore_from_mmap(file_content_t *fc) {
+  if (!fc || fc->file_data == MAP_FAILED || fc->file_size == 0) {
+    printf("⚠️  空文件或映射失败，无需恢复\n");
+    return 0;
+  }
+
+  char *data = (char *)fc->file_data;
+  size_t size = fc->file_size;
+  printf("size->%zu\n", size);
+  size_t pos = 0;
+
+  char current_type[32] = {0};
+  int expected_count = 0;
+  int loaded_count = 0;
+
+  while (pos < size) {
+    char *line_start = data + pos;
+    size_t remain = size - pos;
+    char *line_end = memchr(line_start, '\n', remain);
+    size_t line_len = line_end ? (line_end - line_start) : remain;
+
+    char line[1024] = {0}; // 初始化缓冲区
+    if (line_len >= sizeof(line)) {
+      fprintf(stderr, "行过长，无法处理\n");
+      return -1;
+    }
+    memcpy(line, line_start, line_len);
+    line[line_len] = '\0';
+
+    if (line_len > 0 && line[line_len - 1] == '\r') {
+      line[line_len - 1] = '\0';
+      line_len--;
+    }
+
+    if (line_end) {
+      pos += line_len + 1;
+    } else {
+      pos += line_len;
+    }
+
+    if (line_len == 0)
+      continue;
+
+    // ===================== 核心修复 =====================
+    // 1. 解析字符串+数字
+    char type_buf[32] = {0};
+    int count;
+    if (sscanf(line, "%31s %d", type_buf, &count) == 2) {
+
+      // 2. 只允许合法类型！过滤掉 1 1 这种键值对！
+      if (strcmp(type_buf, "array") == 0 || strcmp(type_buf, "rbtree") == 0 ||
+          strcmp(type_buf, "hash") == 0 || strcmp(type_buf, "skiplist") == 0) {
+
+        // 3. 先赋值，再打印！
+        strncpy(current_type, type_buf, sizeof(current_type) - 1);
+        expected_count = count;
+        loaded_count = 0;
+        printf("✅ 识别类型：%s\n", current_type); // 正确打印
+        continue;
+      }
+    }
+    // ====================================================
+
+    // 无类型标记 → 错误
+    if (current_type[0] == '\0') {
+      fprintf(stderr, "错误：在类型行之前遇到键值对\n");
+      return -1;
+    }
+
+    // 解析键值对
+    char key[512], value[512];
+    if (sscanf(line, "%511s %511s", key, value) != 2) {
+      fprintf(stderr, "错误：无法解析键值对：%s\n", line);
+      return -1;
+    }
+
+    // ===================== 测试打印（必执行！） =====================
+    printf("🎯 处理键值：类型=%s | key=%s | value=%s\n", current_type, key,
+           value);
+
+    // 插入数据结构（无冗余校验）
+    if (strcmp(current_type, "array") == 0) {
+      kvs_array_set(global_array, key, value);
+    } else if (strcmp(current_type, "rbtree") == 0) {
+      kvs_rbtree_set(global_rbtree, key, value);
+    } else if (strcmp(current_type, "hash") == 0) {
+      kvs_hash_set(global_hash, key, value);
+    } else if (strcmp(current_type, "skiplist") == 0) {
+      kvs_skiplist_set(global_skiplist, key, value);
+    }
+
+    loaded_count++;
+  }
+
+  printf("✅ 快照恢复完成\n");
   return 0;
 }

@@ -5,9 +5,9 @@ from typing import Optional
 
 # 服务器配置（固定不变）
 SERVER_IP = "192.168.140.134"
-SERVER_PORT = 2000
+SERVER_PORT = 2001
 BUFFER_SIZE = 4096
-TEST_COUNT = 1  # 固定10000条 key1~key10000
+TEST_COUNT = 1000  # 固定10000条 key1~key10000
 
 # 预置大字符串（Value）
 LARGE_VALUE = "测试大Value内容：" + "abcdefghijklmnopqrstuvwxyz1234567890" * 100

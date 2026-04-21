@@ -56,6 +56,8 @@ enum {
   KVS_CMD_SKMOD,
   KVS_CMD_SKEXIST,
 
+  SAVE,
+
   KVS_CMD_MAX,
 };
 #endif

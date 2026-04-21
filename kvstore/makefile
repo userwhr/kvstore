@@ -3,7 +3,8 @@ TARGET = kvstore
 LINK =$(BUILD)kvs_array.o $(BUILD)reactor.o $(BUILD)kvs_rbtree.o \
 	$(BUILD)nty_server.o $(BUILD)kvs_hash.o $(BUILD)kvs_skiplist.o \
 	$(BUILD)kvstore.o $(BUILD)kvs_persist.o $(BUILD)Cmd.o\
-	$(BUILD)kvs_mempool.o $(BUILD)resp.o $(BUILD)io_uringTodesk.o
+	$(BUILD)kvs_mempool.o $(BUILD)resp.o $(BUILD)io_uringTodesk.o \
+	$(BUILD)traversal.o $(BUILD)config.o
 NTYCO_COMPLIE = -I ./core/ -L ./core/ -lntyco -lpthread
 Include_path = ./include/
 SRC = ./src/
@@ -22,4 +23,6 @@ compile:
 	gcc -c $(SRC)resp.c -o $(BUILD)resp.o -I $(Include_path) && \
 	gcc -c $(SRC)nty_server.c -I ./core/ -o $(BUILD)nty_server.o && \
 	gcc -c $(SRC)Cmd.c -o $(BUILD)Cmd.o && \
-	gcc -c $(SRC)io_uringTodesk.c -o $(BUILD)io_uringTodesk.o -I $(Include_path)
+	gcc -c $(SRC)io_uringTodesk.c -o $(BUILD)io_uringTodesk.o -I $(Include_path) && \
+	gcc -c $(SRC)traversal.c -o $(BUILD)traversal.o -I $(Include_path) && \
+	gcc -c $(SRC)config.c -o $(BUILD)config.o -I $(Include_path)

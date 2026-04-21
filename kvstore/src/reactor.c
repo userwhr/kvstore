@@ -96,7 +96,7 @@ static int str_len_raw(char *s) {
 }
 
 int recv_cb(int fd) {
-  printf("进入recv_cb\n");
+  // printf("进入recv_cb\n");
   conn_t *conn = &conn_list[fd];
   int ret;
 
@@ -199,8 +199,8 @@ int send_cb(int fd) {
       epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
       return send_ret;
     }
-    printf("发送成功，长度：%d\n", curr_len);
-    printf("wbuf=%s\n", conn->wbuffer);
+    // printf("发送成功，长度：%d\n", curr_len);
+    // printf("wbuf=%s\n", conn->wbuffer);
 
     // 3. 发完一个，队列头后移，计数-1
     conn->send_queue_head = (conn->send_queue_head + 1) % MAX_SEND_QUEUE;
