@@ -86,8 +86,8 @@ int fcInit(const char *filename, file_content_t *fc) {
   fc->file_size = (size_t)file_stat.st_size;
   // ============================================================
 
-  printf("✅ fcInit：文件打开成功，fd=%d，文件大小=%zu 字节\n", fc->file_fd,
-         fc->file_size);
+  // printf("✅ fcInit：文件打开成功，fd=%d，文件大小=%zu 字节\n", fc->file_fd,
+  //        fc->file_size);
   return 0;
 }
 
@@ -113,7 +113,7 @@ int map_file_to_struct(file_content_t *fc) {
 
   // 3. 文件为空，直接返回（无需mmap）
   if (fc->file_size == 0) {
-    printf("⚠️  空文件，跳过mmap\n");
+    printf("Void file no need mmap\n");
     return 0;
   }
 
@@ -127,7 +127,6 @@ int map_file_to_struct(file_content_t *fc) {
     return -1;
   }
 
-  printf("✅ map_file_to_struct：映射成功，大小=%zu 字节\n", fc->file_size);
   return 0;
 }
 /**
@@ -204,7 +203,39 @@ static int mmapProtocal(char *tokens[]) {
 
   return 0;
 }
+// 🔥 修复后：支持带空格、任意字符的Key/Value
+int parse_kv_line(char *line, char *key, char *value, int key_size,
+                  int val_size) {
+  int klen, vlen;
+  // 1. 先读取  key长度 和 value长度
+  if (sscanf(line, "%d %d", &klen, &vlen) != 2) {
+    fprintf(stderr, "错误：无法解析长度\n");
+    return -1;
+  }
 
+  // 安全校验：防止缓冲区溢出
+  if (klen <= 0 || vlen <= 0 || klen >= key_size || vlen >= val_size) {
+    fprintf(stderr, "错误：长度非法\n");
+    return -1;
+  }
+
+  // 2. 定位到数据起始位置（跳过 "klen vlen "）
+  char *data = line;
+  while (*data != ' ')
+    data++; // 跳过第一个数字
+  data++;
+  while (*data != ' ')
+    data++; // 跳过第二个数字
+  data++;   // 指向真正的key+value数据
+
+  // 3. 精准拷贝key和value（带空格也完美保留）
+  memcpy(key, data, klen);
+  key[klen] = '\0';
+  memcpy(value, data + klen, vlen);
+  value[vlen] = '\0';
+
+  return 0;
+}
 // 配套释放函数（必须调用，防止内存/文件句柄泄漏）
 void free_file_content(file_content_t *fc) {
   if (fc == NULL)
@@ -241,7 +272,7 @@ void free_file_content(file_content_t *fc) {
 int AOF_commands_from_mmap(file_content_t *fc) {
   // 空文件直接返回
   if (fc->file_size == 0 || fc->file_data == NULL) {
-    printf("✅ 文件为空，无指令需要执行\n");
+    printf("NO CMD IN AOF\n");
     return 0;
   }
 
@@ -249,8 +280,6 @@ int AOF_commands_from_mmap(file_content_t *fc) {
   char *mmap_data = (char *)fc->file_data;
   size_t total_size = fc->file_size;
   size_t processed = 0; // 已处理的指令字节数
-
-  printf("🔄 开始执行mmap文件中的指令，总大小：%zu 字节\n", total_size);
 
   // ====================== 完全复用你的原解析+执行循环逻辑
   // ======================
@@ -295,8 +324,6 @@ int AOF_commands_from_mmap(file_content_t *fc) {
     // -------------- 游标前移：消耗已处理指令 --------------
     processed += oneRespLen;
   }
-
-  printf("🎉 所有mmap文件中的指令执行完毕！\n");
   return 0;
 }
 
@@ -308,7 +335,6 @@ int snapshot_restore_from_mmap(file_content_t *fc) {
 
   char *data = (char *)fc->file_data;
   size_t size = fc->file_size;
-  printf("size->%zu\n", size);
   size_t pos = 0;
 
   char current_type[32] = {0};
@@ -357,7 +383,7 @@ int snapshot_restore_from_mmap(file_content_t *fc) {
         strncpy(current_type, type_buf, sizeof(current_type) - 1);
         expected_count = count;
         loaded_count = 0;
-        printf("✅ 识别类型：%s\n", current_type); // 正确打印
+        // printf("✅ 识别类型：%s\n", current_type); // 正确打印
         continue;
       }
     }
@@ -370,15 +396,15 @@ int snapshot_restore_from_mmap(file_content_t *fc) {
     }
 
     // 解析键值对
-    char key[512], value[512];
-    if (sscanf(line, "%511s %511s", key, value) != 2) {
-      fprintf(stderr, "错误：无法解析键值对：%s\n", line);
+    char key[512] = {0}, value[512] = {0};
+    if (parse_kv_line(line, key, value, 512, 512) != 0) {
+      fprintf(stderr, "解析失败：%s\n", line);
       return -1;
     }
 
     // ===================== 测试打印（必执行！） =====================
-    printf("🎯 处理键值：类型=%s | key=%s | value=%s\n", current_type, key,
-           value);
+    // printf("🎯 处理键值：类型=%s | key=%s | value=%s\n", current_type, key,
+    //        value);
 
     // 插入数据结构（无冗余校验）
     if (strcmp(current_type, "array") == 0) {
@@ -393,7 +419,5 @@ int snapshot_restore_from_mmap(file_content_t *fc) {
 
     loaded_count++;
   }
-
-  printf("✅ 快照恢复完成\n");
   return 0;
 }

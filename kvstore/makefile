@@ -11,6 +11,10 @@ SRC = ./src/
 BUILD = ./build/
 kvstore:compile
 	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring -o $(TARGET)
+debug:compile
+	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring -o debug
+test:
+	gcc hiredis_test.c -o kv_client -lhiredis
 compile:
 	gcc -c $(SRC)kvs_array.c -o $(BUILD)kvs_array.o -I $(Include_path) && \
 	gcc -c $(SRC)reactor.c -o $(BUILD)reactor.o -I $(Include_path) && \

@@ -55,9 +55,8 @@ enum {
   KVS_CMD_SKDEL,
   KVS_CMD_SKMOD,
   KVS_CMD_SKEXIST,
-
   SAVE,
-
+  COMMAND,
   KVS_CMD_MAX,
 };
 #endif

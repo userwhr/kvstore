@@ -1,7 +1,7 @@
 #ifndef _ARRAY_
 #define _ARRAY_
 // array
-#define KVS_ARRAY_INIT_CAPACITY 1024 // 初始容量（替代原1024定长）
+#define KVS_ARRAY_INIT_CAPACITY 512 // 初始容量（替代原1024定长）
 #define ENABLE_KEY_POINTER 1
 
 typedef struct kvs_array_item {

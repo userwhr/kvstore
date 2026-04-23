@@ -144,7 +144,7 @@ int kvs_array_del(kvs_array_t *inst, char *key) {
       return 0;
     }
   }
-  return -1;
+  return 1;
 }
 
 /*

@@ -69,7 +69,7 @@ int accept_cb(int fd) {
     printf("accept errno: %d --> %s\n", errno, strerror(errno));
     return -1;
   }
-  printf("建立链接成功,fd=%d的\n", clientfd);
+  // printf("建立链接成功,fd=%d的\n", clientfd);
 
   event_register(clientfd, EPOLLIN); // | EPOLLET
 
@@ -192,6 +192,7 @@ int send_cb(int fd) {
     uint32_t curr_len = conn->send_len_queue[conn->send_queue_head];
 
     // 2. 从偏移位置开始发送（分包发送）
+    // printf("send->%s", conn->wbuffer);
     send_ret = send(fd, conn->wbuffer + curr_off, curr_len, 0);
 
     if (send_ret <= 0) { // 发送失败
