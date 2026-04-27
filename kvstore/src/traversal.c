@@ -298,7 +298,9 @@ int dump_all_to_disk(void) {
       for (int i = 0; i < array_inf->count; i++) {
         int klen = strlen(array_inf->key[i]);
         int vlen = strlen(array_inf->value[i]);
-        fprintf(fp, "%d %d %s %s\n", klen, vlen, array_inf->key[i],
+        // 注意：key 和 value 之间不能有空格！
+        // parse_kv_line 期望格式为 "klen vlen keyvalue"（key和value连续）
+        fprintf(fp, "%d %d %s%s\n", klen, vlen, array_inf->key[i],
                 array_inf->value[i]);
       }
       free_kvinf(array_inf);
@@ -313,7 +315,8 @@ int dump_all_to_disk(void) {
       for (int i = 0; i < rbtree_inf->count; i++) {
         int klen = strlen(rbtree_inf->key[i]);
         int vlen = strlen(rbtree_inf->value[i]);
-        fprintf(fp, "%d %d %s %s\n", klen, vlen, rbtree_inf->key[i],
+        // 注意：key 和 value 之间不能有空格！
+        fprintf(fp, "%d %d %s%s\n", klen, vlen, rbtree_inf->key[i],
                 rbtree_inf->value[i]);
       }
       free_kvinf(rbtree_inf);
@@ -328,7 +331,8 @@ int dump_all_to_disk(void) {
       for (int i = 0; i < hash_inf->count; i++) {
         int klen = strlen(hash_inf->key[i]);
         int vlen = strlen(hash_inf->value[i]);
-        fprintf(fp, "%d %d %s %s\n", klen, vlen, hash_inf->key[i],
+        // 注意：key 和 value 之间不能有空格！
+        fprintf(fp, "%d %d %s%s\n", klen, vlen, hash_inf->key[i],
                 hash_inf->value[i]);
       }
       free_kvinf(hash_inf);
@@ -343,7 +347,8 @@ int dump_all_to_disk(void) {
       for (int i = 0; i < skiplist_inf->count; i++) {
         int klen = strlen(skiplist_inf->key[i]);
         int vlen = strlen(skiplist_inf->value[i]);
-        fprintf(fp, "%d %d %s %s\n", klen, vlen, skiplist_inf->key[i],
+        // 注意：key 和 value 之间不能有空格！
+        fprintf(fp, "%d %d %s%s\n", klen, vlen, skiplist_inf->key[i],
                 skiplist_inf->value[i]);
       }
       free_kvinf(skiplist_inf);

@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #define CONNECTION_SIZE 1024
-#define MAX_PORTS 20
+#define MAX_PORTS 1
 #define TIME_SUB_MS(tv1, tv2)                                                  \
   ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 char global_rbuff[1024 * 1024];

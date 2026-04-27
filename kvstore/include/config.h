@@ -34,6 +34,14 @@ typedef struct {
   // 内存池
   int enable_slab_pool;
 
+  // 主从模式
+  int enable_slave;
+
+  // Slave 配置（仅在 enable_slave=1 时生效）
+  char slave_of_ip[64];
+  int slave_of_port;
+  int slave_rdma_port;
+
   // 端口
   int port;
 } KvConfig;

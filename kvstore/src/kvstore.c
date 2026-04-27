@@ -1,9 +1,11 @@
 #include "kvstore.h"
 #include "config.h"
 #include "rbtree.h"
+#include "rdma_replication.h"
 #include "traversal.h"
 #include <fcntl.h>
 #include <malloc.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +29,9 @@ kvs_array_t *global_array = NULL;
 kvs_rbtree_t *global_rbtree = NULL;
 kvs_hash_t *global_hash = NULL;
 kvs_skiplist_t *global_skiplist = NULL;
+
+// 主从同步标志：SYNC 进行中时，阻止写操作
+extern volatile int g_syncing;
 
 // 原有kvs_init函数...
 void kvs_init(void) {
@@ -67,66 +72,6 @@ void kvs_init(void) {
     kvs_skiplist_creat(global_skiplist);
   }
 }
-
-int kvs_split_token(char *msg, char *tokens[]) {
-  if (msg == NULL || tokens == NULL) {
-    return -1;
-  }
-  int idx = 0;
-  char *token = strtok(msg, " ");
-  while (token != NULL && idx < KV_MAX) {
-    tokens[idx] = (char *)kvs_malloc(strlen(token) + 1);
-    if (tokens[idx] == NULL) {
-      perror("malloc token failed");
-      for (int i = 0; i < idx; i++) {
-        kvs_free(tokens[i]);
-      }
-      return -1;
-    }
-    strcpy(tokens[idx], token);
-    idx += 1;
-    token = strtok(NULL, " ");
-  }
-  return idx;
-}
-
-// 新增：按&&拆分多条指令，返回指令条数
-int kvs_split_multi_cmd(char *msg, char *cmds[]) {
-  if (msg == NULL || cmds == NULL) {
-    return -1;
-  }
-  printf("msg->%s", msg);
-
-  int idx = 0;
-  char *cmd = strtok(msg, g_config.cmd_delim);
-  while (cmd != NULL && idx < g_config.max_cmd_num) {
-    // 去除指令前后的空格（兼容"set a b && get a"和"set a b&&get a"）
-    char *trimmed_cmd = cmd;
-    // 跳过前导空格
-    while (*trimmed_cmd == ' ' && *trimmed_cmd != '\0')
-      trimmed_cmd++;
-    // 去除尾部空格
-    char *end = trimmed_cmd + strlen(trimmed_cmd) - 1;
-    while (end > trimmed_cmd && *end == ' ')
-      end--;
-    *(end + 1) = '\0';
-
-    // 分配内存存储指令（避免栈指针失效）
-    cmds[idx] = (char *)kvs_malloc(strlen(trimmed_cmd) + 1);
-    if (cmds[idx] == NULL) {
-      perror("malloc cmd failed");
-      // 回滚已分配的指令内存
-      for (int i = 0; i < idx; i++) {
-        kvs_free(cmds[i]);
-      }
-      return -1;
-    }
-    strcpy(cmds[idx], trimmed_cmd);
-    idx++;
-    cmd = strtok(NULL, g_config.cmd_delim);
-  }
-  return idx;
-}
 // tokens中是不包括\r\n的
 int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
   int len_rsp = 0;
@@ -156,6 +101,29 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
     }
   }
 
+  // ====================== 主从同步锁检查 ======================
+  // 如果 SYNC 正在进行中，阻止所有写操作
+  if (g_syncing) {
+    int is_write = 0;
+    if ((cmd >= KVS_CMD_SET && cmd <= KVS_CMD_DEL) ||   // array: SET, DEL
+        (cmd == KVS_CMD_MOD) ||                         // array: MOD
+        (cmd >= KVS_CMD_RSET && cmd <= KVS_CMD_RDEL) || // rbtree: RSET, RDEL
+        (cmd == KVS_CMD_RMOD) ||                        // rbtree: RMOD
+        (cmd >= KVS_CMD_HSET && cmd <= KVS_CMD_HDEL) || // hash: HSET, HDEL
+        (cmd == KVS_CMD_HMOD) ||                        // hash: HMOD
+        (cmd >= KVS_CMD_SKSET &&
+         cmd <= KVS_CMD_SKDEL) || // skiplist: SKSET, SKDEL
+        (cmd == KVS_CMD_SKMOD) || // skiplist: SKMOD
+        (cmd == SAVE)) {          // SAVE
+      is_write = 1;
+    }
+    if (is_write) {
+      length = sprintf(response, "-SYNC Syncing in progress\r\n");
+      return strlen(response);
+    }
+  }
+  // ==========================================================
+
   int ret = 0;
   char *async_buf;
   size_t msg_len;
@@ -163,7 +131,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
   switch (cmd) {
   // 数组 SET
   case KVS_CMD_SET:
-    if (count > 3) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 3) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -189,7 +163,7 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 数组 GET
   case KVS_CMD_GET: {
-    if (count > 2) {
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -205,7 +179,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 数组 DEL
   case KVS_CMD_DEL:
-    if (count > 2) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -231,7 +211,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 数组 MOD
   case KVS_CMD_MOD:
-    if (count > 3) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 3) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -257,7 +243,7 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 数组 EXIST
   case KVS_CMD_EXIST:
-    if (count > 2) {
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -271,7 +257,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 红黑树 RSET
   case KVS_CMD_RSET:
-    if (count > 3) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 3) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -314,7 +306,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 红黑树 RDEL
   case KVS_CMD_RDEL:
-    if (count > 2) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -338,7 +336,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 红黑树 RMOD
   case KVS_CMD_RMOD:
-    if (count > 3) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 3) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -364,7 +368,7 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 红黑树 REXIST
   case KVS_CMD_REXIST:
-    if (count > 2) {
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -378,7 +382,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 哈希 HSET
   case KVS_CMD_HSET:
-    if (count > 3) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 3) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -404,7 +414,7 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 哈希 HGET
   case KVS_CMD_HGET: {
-    if (count > 2) {
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -420,7 +430,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 哈希 HDEL
   case KVS_CMD_HDEL:
-    if (count > 2) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -444,7 +460,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 哈希 HMOD
   case KVS_CMD_HMOD:
-    if (count > 3) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 3) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -470,7 +492,7 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 哈希 HEXIST
   case KVS_CMD_HEXIST:
-    if (count > 2) {
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -484,7 +506,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 跳表 SKSET
   case KVS_CMD_SKSET:
-    if (count > 3) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 3) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -510,7 +538,7 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 跳表 SKGET
   case KVS_CMD_SKGET: {
-    if (count > 2) {
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -527,7 +555,13 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 跳表 SKDEL
   case KVS_CMD_SKDEL:
-    if (count > 2) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -551,7 +585,19 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 跳表 SKMOD
   case KVS_CMD_SKMOD:
-    if (count > 3) {
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (g_config.enable_slave) {
+      length =
+          sprintf(response,
+                  "-READONLY You can't write against a read only replica.\r\n");
+      break;
+    }
+    if (count != 3) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -577,7 +623,7 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // 跳表 SKEXIST
   case KVS_CMD_SKEXIST:
-    if (count > 2) {
+    if (count != 2) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -591,7 +637,7 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
 
   // SAVE
   case SAVE: {
-    if (count > 1) {
+    if (count != 1) {
       length = sprintf(response, "-syntax error\r\n");
       break;
     }
@@ -640,6 +686,69 @@ int kvs_filter_protocol(char *tokens[], char *msg, int count, char *response) {
       length += sprintf(response + length, "*1\r\n$%d\r\n%s\r\n", flag_len,
                         cmd_info[i].flags);
     }
+    break;
+  }
+  case SYNC: {
+    if (g_config.enable_slave) {
+      length = sprintf(response, "-ERR SYNC command is for master only\r\n");
+      break;
+    }
+    // 设置同步标志，阻止写操作
+    g_syncing = 1;
+    printf("[SYNC] Starting full sync, write operations blocked\n");
+
+    // 1. 执行 SAVE（将当前内存数据持久化到磁盘）
+    if (g_config.enable_full_persist == 1) {
+      dump_all_to_disk();
+    }
+
+    // 2. 回复 +OK（表示 SAVE 完成，Slave 可以开始 RDMA 接收）
+    length = sprintf(response, "+OK\r\n");
+
+    // 3. 重新打开文件读取最新内容，通过 RDMA 发送
+    // 注意：不能直接用 kvs_log->file_data，因为那是旧的 mmap 映射，
+    // dump_all_to_disk() 写入新数据后，mmap 内容可能未同步。
+    pthread_t rdma_thread;
+    struct rdma_mem_thread_arg {
+      const void *data;
+      size_t data_size;
+      int rdma_port;
+    };
+    struct rdma_mem_thread_arg *arg = malloc(sizeof(struct rdma_mem_thread_arg));
+    if (arg != NULL) {
+      // 重新打开文件读取最新内容
+      FILE *fp = fopen(g_config.log_path, "rb");
+      if (fp) {
+        fseek(fp, 0, SEEK_END);
+        size_t file_size = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+
+        if (file_size > 0) {
+          char *file_data = (char *)malloc(file_size);
+          if (file_data) {
+            size_t read_ret = fread(file_data, 1, file_size, fp);
+            if (read_ret == file_size) {
+              arg->data = file_data;
+              arg->data_size = file_size;
+              arg->rdma_port = g_config.slave_rdma_port;
+              printf("[SYNC] Sending file data: %zu bytes via RDMA port %d\n",
+                     arg->data_size, arg->rdma_port);
+              pthread_create(&rdma_thread, NULL, &rdma_master_send_mem_thread, arg);
+              pthread_detach(rdma_thread);
+              fclose(fp);
+              break; // 跳出，不执行下面的错误处理
+            }
+            free(file_data);
+          }
+        }
+        fclose(fp);
+      }
+      free(arg);
+      fprintf(stderr, "[SYNC] Failed to read file for RDMA send\n");
+    } else {
+      fprintf(stderr, "[SYNC] Failed to allocate RDMA thread arg\n");
+    }
+    g_syncing = 0;
     break;
   }
   // 未知命令

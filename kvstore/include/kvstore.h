@@ -57,6 +57,7 @@ enum {
   KVS_CMD_SKEXIST,
   SAVE,
   COMMAND,
+  SYNC,
   KVS_CMD_MAX,
 };
 #endif

@@ -86,8 +86,21 @@ static void parse_line(char *line, KvConfig *cfg) {
     cfg->enable_skiplist = atoi(value);
   else if (strcmp(key, "ENABLE_SLAB_POOL") == 0)
     cfg->enable_slab_pool = atoi(value);
+  else if (strcmp(key, "ENABLE_SLAVE") == 0)
+    cfg->enable_slave = atoi(value);
+  else if (strcmp(key, "SLAVE_OF_IP") == 0) {
+    trim_quotes(value);
+    strncpy(cfg->slave_of_ip, value, sizeof(cfg->slave_of_ip) - 1);
+  } else if (strcmp(key, "SLAVE_OF_PORT") == 0)
+    cfg->slave_of_port = atoi(value);
+  else if (strcmp(key, "SLAVE_RDMA_PORT") == 0)
+    cfg->slave_rdma_port = atoi(value);
   else if (strcmp(key, "PORT") == 0)
     cfg->port = atoi(value);
+  if (cfg->enable_slave == 1) {
+    cfg->enable_incremental_persist = 0;
+    cfg->enable_full_persist = 0;
+  }
 }
 
 // 加载配置文件
@@ -107,6 +120,10 @@ int load_config(const char *config_path) {
   g_config.enable_skiplist = 1;
   g_config.enable_slab_pool = 1;
   g_config.port = 6379;
+  // Slave 默认配置
+  strcpy(g_config.slave_of_ip, "127.0.0.1");
+  g_config.slave_of_port = 6379;
+  g_config.slave_rdma_port = 6380;
 
   FILE *fp = fopen(config_path, "r");
   if (fp == NULL) {
