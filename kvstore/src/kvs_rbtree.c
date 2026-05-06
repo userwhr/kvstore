@@ -37,7 +37,7 @@ static char *safe_strdup(const char *str) {
   if (!str)
     return NULL;
   size_t len = strlen(str) + 1;
-  char *new_str = (char *)kvs_malloc(len);
+  char *new_str = (char *)malloc(len);
   if (new_str) {
     strcpy(new_str, str);
   }
@@ -335,8 +335,8 @@ static KvsRbtreeNode *rbtree_delete_node(kvs_rbtree_t *tree, KvsRbtreeNode *z) {
   // 4. 若删除的是后继节点，拷贝键值到原节点
   if (del_node != z) {
     // 释放原节点的键值，替换为后继节点的键值
-    kvs_free(z->key);
-    kvs_free(z->value);
+    free(z->key);
+    free(z->value);
     z->key = safe_strdup((const char *)del_node->key);
     z->value = safe_strdup((const char *)del_node->value);
     if (!z->key || !z->value) {
@@ -393,7 +393,7 @@ KvsRbtreeErrCode kvs_rbtree_create(kvs_rbtree_t *inst) {
   }
 
   // 初始化哨兵节点（nil）
-  inst->nil = (KvsRbtreeNode *)kvs_malloc(sizeof(KvsRbtreeNode));
+  inst->nil = (KvsRbtreeNode *)malloc(sizeof(KvsRbtreeNode));
   if (!inst->nil) {
     return KVS_RBTREE_ERR_MEM_ALLOC;
   }
@@ -420,14 +420,14 @@ void kvs_rbtree_destroy(kvs_rbtree_t *inst) {
     KvsRbtreeNode *min_node = rbtree_min_node(inst, inst->root);
     KvsRbtreeNode *del_node = rbtree_delete_node(inst, min_node);
     if (del_node != inst->nil) {
-      kvs_free(del_node->key);
-      kvs_free(del_node->value);
-      kvs_free(del_node);
+      free(del_node->key);
+      free(del_node->value);
+      free(del_node);
     }
   }
 
   // 释放哨兵节点
-  kvs_free(inst->nil);
+  free(inst->nil);
   inst->root = NULL;
   inst->nil = NULL;
   inst->key_cmp = NULL;
@@ -448,7 +448,7 @@ KvsRbtreeErrCode kvs_rbtree_set(kvs_rbtree_t *inst, const char *key,
   }
 
   // 创建新节点
-  KvsRbtreeNode *new_node = (KvsRbtreeNode *)kvs_malloc(sizeof(KvsRbtreeNode));
+  KvsRbtreeNode *new_node = (KvsRbtreeNode *)malloc(sizeof(KvsRbtreeNode));
   if (!new_node) {
     return KVS_RBTREE_ERR_MEM_ALLOC;
   }
@@ -457,9 +457,9 @@ KvsRbtreeErrCode kvs_rbtree_set(kvs_rbtree_t *inst, const char *key,
   new_node->key = safe_strdup(key);
   new_node->value = safe_strdup(value);
   if (!new_node->key || !new_node->value) {
-    kvs_free(new_node->key);
-    kvs_free(new_node->value);
-    kvs_free(new_node);
+    free(new_node->key);
+    free(new_node->value);
+    free(new_node);
     return KVS_RBTREE_ERR_MEM_ALLOC;
   }
 
@@ -497,9 +497,9 @@ KvsRbtreeErrCode kvs_rbtree_del(kvs_rbtree_t *inst, const char *key) {
   // 删除节点并释放内存
   KvsRbtreeNode *del_node = rbtree_delete_node(inst, node);
   if (del_node != inst->nil) {
-    kvs_free(del_node->key);
-    kvs_free(del_node->value);
-    kvs_free(del_node);
+    free(del_node->key);
+    free(del_node->value);
+    free(del_node);
   }
   return KVS_RBTREE_SUCCESS;
 }
@@ -517,7 +517,7 @@ KvsRbtreeErrCode kvs_rbtree_mod(kvs_rbtree_t *inst, const char *key,
   }
 
   // 释放旧值，拷贝新值
-  kvs_free(node->value);
+  free(node->value);
   node->value = safe_strdup(new_value);
   if (!node->value) {
     return KVS_RBTREE_ERR_MEM_ALLOC;

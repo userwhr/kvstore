@@ -98,8 +98,6 @@ void *kvs_malloc(size_t size) {
 
   // 超大或内存池禁用时直接使用 malloc
   void *ptr = malloc(size);
-  if (ptr)
-    memset(ptr, 0, size);
   return ptr;
 }
 

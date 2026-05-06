@@ -5,6 +5,7 @@
 #include "rbtree.h"
 #include "skiplist.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern kvs_array_t *global_array;
@@ -24,7 +25,7 @@ static char *safe_strdup(const char *str) {
   if (!str)
     return NULL;
   size_t len = strlen(str) + 1;
-  char *new_str = (char *)kvs_malloc(len);
+  char *new_str = (char *)malloc(len);
   if (new_str) {
     strcpy(new_str, str);
   }
@@ -42,7 +43,7 @@ void free_kvinf(KvInf_t *inf);
 KvInf_t *traverse_array(void) {
   if (!g_config.enable_array || !global_array)
     return NULL;
-  KvInf_t *inf = (KvInf_t *)kvs_malloc(sizeof(KvInf_t));
+  KvInf_t *inf = (KvInf_t *)malloc(sizeof(KvInf_t));
   if (!inf)
     return NULL;
   inf->type_name = "array";
@@ -52,12 +53,12 @@ KvInf_t *traverse_array(void) {
     inf->value = NULL;
     return inf;
   }
-  inf->key = (char **)kvs_malloc(sizeof(char *) * inf->count);
-  inf->value = (char **)kvs_malloc(sizeof(char *) * inf->count);
+  inf->key = (char **)malloc(sizeof(char *) * inf->count);
+  inf->value = (char **)malloc(sizeof(char *) * inf->count);
   if (!inf->key || !inf->value) {
-    kvs_free(inf->key);
-    kvs_free(inf->value);
-    kvs_free(inf);
+    free(inf->key);
+    free(inf->value);
+    free(inf);
     return NULL;
   }
   for (int i = 0; i < inf->count; i++) {
@@ -65,12 +66,12 @@ KvInf_t *traverse_array(void) {
     inf->value[i] = safe_strdup(global_array->table[i].value);
     if (!inf->key[i] || !inf->value[i]) {
       for (int j = 0; j < i; j++) {
-        kvs_free(inf->key[j]);
-        kvs_free(inf->value[j]);
+        free(inf->key[j]);
+        free(inf->value[j]);
       }
-      kvs_free(inf->key);
-      kvs_free(inf->value);
-      kvs_free(inf);
+      free(inf->key);
+      free(inf->value);
+      free(inf);
       return NULL;
     }
   }
@@ -94,17 +95,17 @@ static void rbtree_collect_callback(const void *key, const void *value,
   // 扩容：失败直接退出，不继续执行
   if (collector->index >= collector->capacity) {
     int new_cap = collector->capacity * 2;
-    char **new_keys = (char **)kvs_malloc(sizeof(char *) * new_cap);
-    char **new_values = (char **)kvs_malloc(sizeof(char *) * new_cap);
+    char **new_keys = (char **)malloc(sizeof(char *) * new_cap);
+    char **new_values = (char **)malloc(sizeof(char *) * new_cap);
     if (!new_keys || !new_values) {
-      kvs_free(new_keys);
-      kvs_free(new_values);
+      free(new_keys);
+      free(new_values);
       return;
     }
     memcpy(new_keys, collector->keys, sizeof(char *) * collector->capacity);
     memcpy(new_values, collector->values, sizeof(char *) * collector->capacity);
-    kvs_free(collector->keys);
-    kvs_free(collector->values);
+    free(collector->keys);
+    free(collector->values);
     collector->keys = new_keys;
     collector->values = new_values;
     collector->capacity = new_cap;
@@ -123,7 +124,7 @@ KvInf_t *traverse_rbtree(void) {
   if (!g_config.enable_rbtree || !global_rbtree)
     return NULL;
 
-  KvInf_t *inf = (KvInf_t *)kvs_malloc(sizeof(KvInf_t));
+  KvInf_t *inf = (KvInf_t *)malloc(sizeof(KvInf_t));
   if (!inf)
     return NULL;
   inf->type_name = "rbtree";
@@ -135,13 +136,13 @@ KvInf_t *traverse_rbtree(void) {
   RbtreeCollector collector = {0};
   collector.capacity = 16;
   collector.index = 0;
-  collector.keys = (char **)kvs_malloc(sizeof(char *) * collector.capacity);
-  collector.values = (char **)kvs_malloc(sizeof(char *) * collector.capacity);
+  collector.keys = (char **)malloc(sizeof(char *) * collector.capacity);
+  collector.values = (char **)malloc(sizeof(char *) * collector.capacity);
 
   if (!collector.keys || !collector.values) {
-    kvs_free(collector.keys);
-    kvs_free(collector.values);
-    kvs_free(inf);
+    free(collector.keys);
+    free(collector.values);
+    free(inf);
     return NULL;
   }
 
@@ -152,13 +153,13 @@ KvInf_t *traverse_rbtree(void) {
 
   // 安全收缩内存
   if (collector.index > 0 && collector.capacity > collector.index) {
-    char **new_keys = (char **)kvs_malloc(sizeof(char *) * collector.index);
-    char **new_values = (char **)kvs_malloc(sizeof(char *) * collector.index);
+    char **new_keys = (char **)malloc(sizeof(char *) * collector.index);
+    char **new_values = (char **)malloc(sizeof(char *) * collector.index);
     if (new_keys && new_values) {
       memcpy(new_keys, collector.keys, sizeof(char *) * collector.index);
       memcpy(new_values, collector.values, sizeof(char *) * collector.index);
-      kvs_free(collector.keys);
-      kvs_free(collector.values);
+      free(collector.keys);
+      free(collector.values);
       inf->key = new_keys;
       inf->value = new_values;
     }
@@ -171,7 +172,7 @@ KvInf_t *traverse_rbtree(void) {
 KvInf_t *traverse_hash(void) {
   if (!g_config.enable_hash || !global_hash)
     return NULL;
-  KvInf_t *inf = (KvInf_t *)kvs_malloc(sizeof(KvInf_t));
+  KvInf_t *inf = (KvInf_t *)malloc(sizeof(KvInf_t));
   if (!inf)
     return NULL;
   inf->type_name = "hash";
@@ -189,12 +190,12 @@ KvInf_t *traverse_hash(void) {
     inf->value = NULL;
     return inf;
   }
-  inf->key = (char **)kvs_malloc(sizeof(char *) * total);
-  inf->value = (char **)kvs_malloc(sizeof(char *) * total);
+  inf->key = (char **)malloc(sizeof(char *) * total);
+  inf->value = (char **)malloc(sizeof(char *) * total);
   if (!inf->key || !inf->value) {
-    kvs_free(inf->key);
-    kvs_free(inf->value);
-    kvs_free(inf);
+    free(inf->key);
+    free(inf->value);
+    free(inf);
     return NULL;
   }
   int idx = 0;
@@ -205,12 +206,12 @@ KvInf_t *traverse_hash(void) {
       inf->value[idx] = safe_strdup(node->value);
       if (!inf->key[idx] || !inf->value[idx]) {
         for (int j = 0; j < idx; j++) {
-          kvs_free(inf->key[j]);
-          kvs_free(inf->value[j]);
+          free(inf->key[j]);
+          free(inf->value[j]);
         }
-        kvs_free(inf->key);
-        kvs_free(inf->value);
-        kvs_free(inf);
+        free(inf->key);
+        free(inf->value);
+        free(inf);
         return NULL;
       }
       idx++;
@@ -224,7 +225,7 @@ KvInf_t *traverse_hash(void) {
 KvInf_t *traverse_skiplist(void) {
   if (!g_config.enable_skiplist || !global_skiplist)
     return NULL;
-  KvInf_t *inf = (KvInf_t *)kvs_malloc(sizeof(KvInf_t));
+  KvInf_t *inf = (KvInf_t *)malloc(sizeof(KvInf_t));
   if (!inf)
     return NULL;
   inf->type_name = "skiplist";
@@ -240,12 +241,12 @@ KvInf_t *traverse_skiplist(void) {
     inf->value = NULL;
     return inf;
   }
-  inf->key = (char **)kvs_malloc(sizeof(char *) * total);
-  inf->value = (char **)kvs_malloc(sizeof(char *) * total);
+  inf->key = (char **)malloc(sizeof(char *) * total);
+  inf->value = (char **)malloc(sizeof(char *) * total);
   if (!inf->key || !inf->value) {
-    kvs_free(inf->key);
-    kvs_free(inf->value);
-    kvs_free(inf);
+    free(inf->key);
+    free(inf->value);
+    free(inf);
     return NULL;
   }
   current = global_skiplist->header->forward[0];
@@ -255,12 +256,12 @@ KvInf_t *traverse_skiplist(void) {
     inf->value[idx] = safe_strdup(current->value);
     if (!inf->key[idx] || !inf->value[idx]) {
       for (int j = 0; j < idx; j++) {
-        kvs_free(inf->key[j]);
-        kvs_free(inf->value[j]);
+        free(inf->key[j]);
+        free(inf->value[j]);
       }
-      kvs_free(inf->key);
-      kvs_free(inf->value);
-      kvs_free(inf);
+      free(inf->key);
+      free(inf->value);
+      free(inf);
       return NULL;
     }
     idx++;
@@ -274,12 +275,12 @@ void free_kvinf(KvInf_t *inf) {
   if (!inf)
     return;
   for (int i = 0; i < inf->count; i++) {
-    kvs_free(inf->key[i]);
-    kvs_free(inf->value[i]);
+    free(inf->key[i]);
+    free(inf->value[i]);
   }
-  kvs_free(inf->key);
-  kvs_free(inf->value);
-  kvs_free(inf);
+  free(inf->key);
+  free(inf->value);
+  free(inf);
 }
 
 // 落盘函数（已修复fflush，稳定）

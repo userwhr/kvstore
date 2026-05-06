@@ -36,20 +36,20 @@ static int _hash(char *key, int size) {
 
 hashnode_t *_create_node(char *key, char *value) {
 
-	hashnode_t *node = (hashnode_t*)kvs_malloc(sizeof(hashnode_t));
+	hashnode_t *node = (hashnode_t*)malloc(sizeof(hashnode_t));
 	if (!node) return NULL;
 	
 #if ENABLE_KEY_POINTER
-	char *kcopy = kvs_malloc(strlen(key) + 1);
+	char *kcopy = malloc(strlen(key) + 1);
 	if (kcopy == NULL) return NULL;
 	memset(kcopy, 0, strlen(key) + 1);
 	strncpy(kcopy, key, strlen(key));
 
 	node->key = kcopy;
 
-	char *kvalue = kvs_malloc(strlen(value) + 1);
+	char *kvalue = malloc(strlen(value) + 1);
 	if (kvalue == NULL) { 
-		kvs_free(kvalue);
+		free(kvalue);
 		return NULL;
 	}
 	memset(kvalue, 0, strlen(value) + 1);
@@ -72,7 +72,7 @@ int kvs_hash_creat(kvs_hash_t *hash) {
 
 	if (!hash) return -1;
 
-	hash->nodes = (hashnode_t**)kvs_malloc(sizeof(hashnode_t*) * MAX_TABLE_SIZE);
+	hash->nodes = (hashnode_t**)malloc(sizeof(hashnode_t*) * MAX_TABLE_SIZE);
 	if (!hash->nodes) return -1;
 
 	hash->max_slots = MAX_TABLE_SIZE;
@@ -96,12 +96,12 @@ void kvs_hash_destory(kvs_hash_t *hash) {
 			node = node->next;
 			hash->nodes[i] = node;
 			
-			kvs_free(tmp);
+			free(tmp);
 			
 		}
 	}
 
-	kvs_free(hash->nodes);
+	free(hash->nodes);
 	
 }
 
@@ -178,9 +178,9 @@ int kvs_hash_mod(kvs_hash_t *hash, char *key, char *value) {
 	}
 
 	// node --> 
-	kvs_free(node->value);
+	free(node->value);
 
-	char *kvalue = kvs_malloc(strlen(value) + 1);
+	char *kvalue = malloc(strlen(value) + 1);
 	if (kvalue == NULL) return -2;
 	memset(kvalue, 0, strlen(value) + 1);
 	strncpy(kvalue, value, strlen(value));
@@ -205,7 +205,7 @@ int kvs_hash_del(kvs_hash_t *hash, char *key) {
 		hashnode_t *tmp = head->next;
 		hash->nodes[idx] = tmp;
 		
-		kvs_free(head);
+		free(head);
 		hash->count --;
 		
 		return 0;
@@ -226,10 +226,10 @@ int kvs_hash_del(kvs_hash_t *hash, char *key) {
 	hashnode_t *tmp = cur->next;
 	cur->next = tmp->next;
 #if ENABLE_KEY_POINTER
-	kvs_free(tmp->key);
-	kvs_free(tmp->value);
+	free(tmp->key);
+	free(tmp->value);
 #endif
-	kvs_free(tmp);
+	free(tmp);
 	
 	hash->count --;
 

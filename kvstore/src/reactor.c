@@ -322,7 +322,7 @@ int react_entrence(unsigned short port, kvs_handler hd) {
       if (events[i].events & EPOLLOUT) {
         conn_list[connfd].send_callback(connfd);
       }
-      if (g_config.enable_slab_pool == 1) {
+      if (g_config.enable_incremental_persist == 1) {
         uringProcessCqes(); // 执行回调函数,释放堆上资源
       }
 #endif

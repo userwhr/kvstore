@@ -30,14 +30,14 @@ int start_master(void) {
 
   /* ========== 第1步：从磁盘加载数据 ========== */
   if (g_config.enable_full_persist == 1) {
-    kvs_log = (file_content_t *)kvs_malloc(sizeof(file_content_t));
+    kvs_log = (file_content_t *)malloc(sizeof(file_content_t));
     fcInit(g_config.log_path, kvs_log);
     map_file_to_struct(kvs_log);
     int ret = snapshot_restore_from_mmap(kvs_log);
     printf("[Master] DB loaded from disk (full persist)\n");
   }
   if (g_config.enable_incremental_persist == 1) {
-    Icr_log = (file_content_t *)kvs_malloc(sizeof(file_content_t));
+    Icr_log = (file_content_t *)malloc(sizeof(file_content_t));
     fcInit(g_config.log_path_icr, Icr_log);
     map_file_to_struct(Icr_log);
     AOF_commands_from_mmap(Icr_log);

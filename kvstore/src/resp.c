@@ -1,8 +1,7 @@
 #include "resp.h"
 #include "kvstore.h"
 #include <ctype.h>
-void *kvs_malloc(size_t size);
-void kvs_free(void *ptr);
+#include <stdlib.h>
 extern char *command[];
 extern int COMMAND_COUNT;
 // ====================== RESP 工具函数（小驼峰）======================

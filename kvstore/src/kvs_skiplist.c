@@ -19,28 +19,28 @@ static int random_level() {
 
 // 创建新节点
 static Node *create_node(const char *key, const char *value, int level) {
-  Node *node = (Node *)kvs_malloc(sizeof(Node));
+  Node *node = (Node *)malloc(sizeof(Node));
   if (!node)
     return NULL;
 
   // 字符串深拷贝，避免外部指针失效
-  node->key = (char *)kvs_malloc(strlen(key) + 1);
-  node->value = (char *)kvs_malloc(strlen(value) + 1);
+  node->key = (char *)malloc(strlen(key) + 1);
+  node->value = (char *)malloc(strlen(value) + 1);
   if (!node->key || !node->value) {
-    kvs_free(node->key);
-    kvs_free(node->value);
-    kvs_free(node);
+    free(node->key);
+    free(node->value);
+    free(node);
     return NULL;
   }
   strcpy(node->key, key);
   strcpy(node->value, value);
 
   // 分配forward数组
-  node->forward = (Node **)kvs_malloc(sizeof(Node *) * level);
+  node->forward = (Node **)malloc(sizeof(Node *) * level);
   if (!node->forward) {
-    kvs_free(node->key);
-    kvs_free(node->value);
-    kvs_free(node);
+    free(node->key);
+    free(node->value);
+    free(node);
     return NULL;
   }
   memset(node->forward, 0, sizeof(Node *) * level);
@@ -67,10 +67,10 @@ int kvs_skiplist_creat(kvs_skiplist_t *inst) {
 // 释放单个节点内存
 static void free_node(Node *node) {
   if (node) {
-    kvs_free(node->key);
-    kvs_free(node->value);
-    kvs_free(node->forward);
-    kvs_free(node);
+    free(node->key);
+    free(node->value);
+    free(node->forward);
+    free(node);
   }
 }
 
@@ -113,8 +113,8 @@ int kvs_skiplist_set(kvs_skiplist_t *inst, char *key, char *value) {
   // 检查key是否已存在，存在则更新value
   current = current->forward[0];
   if (current && strcmp(current->key, key) == 0) {
-    kvs_free(current->value); // 释放旧value
-    current->value = (char *)kvs_malloc(strlen(value) + 1);
+    free(current->value); // 释放旧value
+    current->value = (char *)malloc(strlen(value) + 1);
     if (!current->value)
       return -1;
     strcpy(current->value, value);
@@ -160,7 +160,7 @@ char *kvs_skiplist_get(kvs_skiplist_t *inst, char *key) {
   current = current->forward[0];
   // 找到则返回value的拷贝（避免外部修改/释放导致问题）
   if (current && strcmp(current->key, key) == 0) {
-    char *val = (char *)kvs_malloc(strlen(current->value) + 1);
+    char *val = (char *)malloc(strlen(current->value) + 1);
     strcpy(val, current->value);
     return val;
   }
@@ -235,8 +235,8 @@ int kvs_skiplist_mod(kvs_skiplist_t *inst, char *key, char *value) {
   }
 
   // 4. key存在，执行value更新（和set函数的更新逻辑一致）
-  kvs_free(current->value); // 释放旧value内存
-  current->value = (char *)kvs_malloc(strlen(value) + 1);
+  free(current->value); // 释放旧value内存
+  current->value = (char *)malloc(strlen(value) + 1);
   if (!current->value) {
     // 内存分配失败：这里建议返回新的错误码（比如-3），也可降级返回-1（参数/资源类错误）
     // 按你的核心需求，优先保证「key不存在返回-1」的语义，这里暂返回-1（或自定义-3）

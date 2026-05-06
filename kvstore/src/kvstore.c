@@ -139,9 +139,9 @@ extern volatile int g_syncing;
 
 // 原有kvs_init函数...
 void kvs_init(void) {
-  if (g_config.enable_slab_pool) {
-    kvs_init_slots();
-  }
+  // if (g_config.enable_slab_pool) {
+  //   kvs_init_slots();
+  // }
   if (g_config.enable_array) {
     global_array = (kvs_array_t *)malloc(sizeof(kvs_array_t));
     if (global_array == NULL) {
@@ -256,7 +256,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     } else if (ret == 0) {
       if (g_config.enable_incremental_persist == 1) {
         msg_len = strlen(msg);
-        async_buf = (char *)kvs_malloc(msg_len + 1);
+        async_buf = (char *)malloc(msg_len + 1);
         if (async_buf) {
           memcpy(async_buf, msg, msg_len);
           async_buf[msg_len] = '\0';
@@ -304,7 +304,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     } else if (ret == 0) {
       if (g_config.enable_incremental_persist == 1) {
         msg_len = strlen(msg);
-        async_buf = (char *)kvs_malloc(msg_len + 1);
+        async_buf = (char *)malloc(msg_len + 1);
         if (async_buf) {
           memcpy(async_buf, msg, msg_len);
           async_buf[msg_len] = '\0';
@@ -336,7 +336,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     } else if (ret == 0) {
       if (g_config.enable_incremental_persist == 1) {
         msg_len = strlen(msg);
-        async_buf = (char *)kvs_malloc(msg_len + 1);
+        async_buf = (char *)malloc(msg_len + 1);
         if (async_buf) {
           memcpy(async_buf, msg, msg_len);
           async_buf[msg_len] = '\0';
@@ -379,7 +379,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     ret = kvs_rbtree_set(global_rbtree, tokens[1], tokens[2]);
     if (g_config.enable_incremental_persist == 1) {
       msg_len = strlen(msg);
-      async_buf = (char *)kvs_malloc(msg_len + 1);
+      async_buf = (char *)malloc(msg_len + 1);
       if (async_buf) {
         memcpy(async_buf, msg, msg_len);
         async_buf[msg_len] = '\0';
@@ -409,7 +409,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
       int val_len = strlen(result_2);
       length = sprintf(response, "$%d\r\n%s\r\n", val_len, result_2);
     }
-    kvs_free(result_2);
+    free(result_2);
     break;
   }
 
@@ -431,7 +431,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     } else if (ret == 0) {
       if (g_config.enable_incremental_persist == 1) {
         msg_len = strlen(msg);
-        async_buf = (char *)kvs_malloc(msg_len + 1);
+        async_buf = (char *)malloc(msg_len + 1);
         if (async_buf) {
           memcpy(async_buf, msg, msg_len);
           async_buf[msg_len] = '\0';
@@ -461,7 +461,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     } else if (ret == 0) {
       if (g_config.enable_incremental_persist == 1) {
         msg_len = strlen(msg);
-        async_buf = (char *)kvs_malloc(msg_len + 1);
+        async_buf = (char *)malloc(msg_len + 1);
         if (async_buf) {
           memcpy(async_buf, msg, msg_len);
           async_buf[msg_len] = '\0';
@@ -504,7 +504,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     ret = kvs_hash_set(global_hash, tokens[1], tokens[2]);
     if (g_config.enable_incremental_persist == 1) {
       msg_len = strlen(msg);
-      async_buf = (char *)kvs_malloc(msg_len + 1);
+      async_buf = (char *)malloc(msg_len + 1);
       if (async_buf) {
         memcpy(async_buf, msg, msg_len);
         async_buf[msg_len] = '\0';
@@ -555,7 +555,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     } else if (ret == 0) {
       if (g_config.enable_incremental_persist == 1) {
         msg_len = strlen(msg);
-        async_buf = (char *)kvs_malloc(msg_len + 1);
+        async_buf = (char *)malloc(msg_len + 1);
         if (async_buf) {
           memcpy(async_buf, msg, msg_len);
           async_buf[msg_len] = '\0';
@@ -585,7 +585,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     } else if (ret == 0) {
       if (g_config.enable_incremental_persist == 1) {
         msg_len = strlen(msg);
-        async_buf = (char *)kvs_malloc(msg_len + 1);
+        async_buf = (char *)malloc(msg_len + 1);
         if (async_buf) {
           memcpy(async_buf, msg, msg_len);
           async_buf[msg_len] = '\0';
@@ -628,7 +628,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     ret = kvs_skiplist_set(global_skiplist, tokens[1], tokens[2]);
     if (g_config.enable_incremental_persist == 1) {
       msg_len = strlen(msg);
-      async_buf = (char *)kvs_malloc(msg_len + 1);
+      async_buf = (char *)malloc(msg_len + 1);
       if (async_buf) {
         memcpy(async_buf, msg, msg_len);
         async_buf[msg_len] = '\0';
@@ -658,7 +658,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
       int val_len = strlen(result_sk);
       length = sprintf(response, "$%d\r\n%s\r\n", val_len, result_sk);
     }
-    kvs_free(result_sk);
+    free(result_sk);
     break;
   }
 
@@ -680,7 +680,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     } else if (ret == 0) {
       if (g_config.enable_incremental_persist == 1) {
         msg_len = strlen(msg);
-        async_buf = (char *)kvs_malloc(msg_len + 1);
+        async_buf = (char *)malloc(msg_len + 1);
         if (async_buf) {
           memcpy(async_buf, msg, msg_len);
           async_buf[msg_len] = '\0';
@@ -716,7 +716,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     } else if (ret == 0) {
       if (g_config.enable_incremental_persist == 1) {
         msg_len = strlen(msg);
-        async_buf = (char *)kvs_malloc(msg_len + 1);
+        async_buf = (char *)malloc(msg_len + 1);
         if (async_buf) {
           memcpy(async_buf, msg, msg_len);
           async_buf[msg_len] = '\0';

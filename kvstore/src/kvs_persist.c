@@ -3,6 +3,7 @@
 #include "resp.h"
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h> // 新增：用于文件mode定义
 #include <unistd.h>
@@ -53,7 +54,7 @@ int fcInit(const char *filename, file_content_t *fc) {
   memset(fc, 0, sizeof(file_content_t));
 
   // 3. 保存文件名（分配内存）
-  fc->filename = kvs_malloc(strlen(filename) + 1);
+  fc->filename = malloc(strlen(filename) + 1);
   if (fc->filename == NULL) {
     perror("malloc filename failed");
     return -1;
@@ -317,9 +318,9 @@ int AOF_commands_from_mmap(file_content_t *fc) {
     mmapProtocal(tokens);
 
     // -------------- 复用：释放解析内存 --------------
-    kvs_free(cmd);
+    free(cmd);
     for (int i = 0; i < paramCnt; i++)
-      kvs_free(params[i]);
+      free(params[i]);
 
     // -------------- 游标前移：消耗已处理指令 --------------
     processed += oneRespLen;

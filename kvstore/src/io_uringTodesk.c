@@ -31,7 +31,7 @@ int uringAsyncWrite(int fd, void *buf, size_t len, off_t offset, asyncIoCb_t cb,
     return -ENOLINK;
 
   // 分配请求对象
-  struct ioReq *req = kvs_malloc(sizeof(*req));
+  struct ioReq *req = malloc(sizeof(*req));
   if (!req)
     return -ENOMEM;
 
@@ -44,7 +44,7 @@ int uringAsyncWrite(int fd, void *buf, size_t len, off_t offset, asyncIoCb_t cb,
   // 获取 SQE
   struct io_uring_sqe *sqe = io_uring_get_sqe(&gRing);
   if (!sqe) {
-    kvs_free(req);
+    free(req);
     return -EBUSY;
   }
 
@@ -65,7 +65,7 @@ int uringAsyncFsync(int fd, asyncIoCb_t cb, void *userData) {
   if (!gInited)
     return -ENOLINK;
 
-  struct ioReq *req = kvs_malloc(sizeof(*req));
+  struct ioReq *req = malloc(sizeof(*req));
   if (!req)
     return -ENOMEM;
   req->fd = fd;
@@ -74,7 +74,7 @@ int uringAsyncFsync(int fd, asyncIoCb_t cb, void *userData) {
 
   struct io_uring_sqe *sqe = io_uring_get_sqe(&gRing);
   if (!sqe) {
-    kvs_free(req);
+    free(req);
     return -EBUSY;
   }
 
@@ -105,7 +105,7 @@ void uringProcessCqes(void) {
       req->cb(cqe->res, req->userData);
     }
 
-    kvs_free(req);
+    free(req);
     io_uring_cqe_seen(&gRing, cqe);
   }
 }
@@ -130,5 +130,5 @@ void writeCallback(int res, void *data) {
     printf("[❌ 异步写入失败] 错误: %s\n", strerror(-res));
   }
   // ✅ 关键：释放异步IO的堆内存（必须做！）
-  kvs_free(asyncBuf);
+  free(asyncBuf);
 }

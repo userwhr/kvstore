@@ -1,5 +1,6 @@
 #include "kvstore.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // 内部扩容函数
@@ -9,7 +10,7 @@ static int kvs_array_expand(kvs_array_t *inst) {
 
   int new_capacity = inst->capacity * 2;
   kvs_array_item_t *new_table =
-      kvs_malloc(new_capacity * sizeof(kvs_array_item_t));
+      malloc(new_capacity * sizeof(kvs_array_item_t));
   if (!new_table) {
     printf("扩容内存分配失败\n");
     return -2;
@@ -19,7 +20,7 @@ static int kvs_array_expand(kvs_array_t *inst) {
   memcpy(new_table, inst->table, inst->total * sizeof(kvs_array_item_t));
 
   // 释放旧数组，更新信息
-  kvs_free(inst->table);
+  free(inst->table);
   inst->table = new_table;
   inst->capacity = new_capacity;
 
@@ -30,7 +31,7 @@ int kvs_array_creat(kvs_array_t *inst) {
   if (!inst || inst->table)
     return -1;
 
-  inst->table = kvs_malloc(KVS_ARRAY_INIT_CAPACITY * sizeof(kvs_array_item_t));
+  inst->table = malloc(KVS_ARRAY_INIT_CAPACITY * sizeof(kvs_array_item_t));
   if (!inst->table)
     return -2;
 
@@ -47,10 +48,10 @@ void kvs_array_destory(kvs_array_t *inst) {
 
   // 遍历所有有效元素（紧凑存储，安全释放）
   for (int i = 0; i < inst->total; i++) {
-    kvs_free(inst->table[i].key);
-    kvs_free(inst->table[i].value);
+    free(inst->table[i].key);
+    free(inst->table[i].value);
   }
-  kvs_free(inst->table);
+  free(inst->table);
   inst->table = NULL;
   inst->total = 0;
   inst->capacity = 0;
@@ -75,12 +76,12 @@ int kvs_array_set(kvs_array_t *inst, char *key, char *value) {
   }
 
   // 分配内存
-  char *kcopy = kvs_malloc(strlen(key) + 1);
-  char *kvalue = kvs_malloc(strlen(value) + 1);
+  char *kcopy = malloc(strlen(key) + 1);
+  char *kvalue = malloc(strlen(value) + 1);
   if (!kcopy || !kvalue) {
     printf("内存分配失败\n");
-    kvs_free(kcopy);
-    kvs_free(kvalue);
+    free(kcopy);
+    free(kvalue);
     return -2;
   }
   strcpy(kcopy, key);
@@ -122,8 +123,8 @@ int kvs_array_del(kvs_array_t *inst, char *key) {
 
     if (strcmp(inst->table[i].key, key) == 0) {
       // 释放内存
-      kvs_free(inst->table[i].key);
-      kvs_free(inst->table[i].value);
+      free(inst->table[i].key);
+      free(inst->table[i].value);
 
       // 🔥 保持紧凑：后续元素前移
       int move_num = inst->total - i - 1;
@@ -158,7 +159,7 @@ int kvs_array_mod(kvs_array_t *inst, char *key, char *value) {
   if (!old_value)
     return 1;
 
-  char *new_val = kvs_malloc(strlen(value) + 1);
+  char *new_val = malloc(strlen(value) + 1);
   if (!new_val) {
     printf("value内存分配失败\n");
     return -2;
@@ -168,13 +169,13 @@ int kvs_array_mod(kvs_array_t *inst, char *key, char *value) {
   // 找到并替换
   for (int i = 0; i < inst->total; i++) {
     if (inst->table[i].key && strcmp(inst->table[i].key, key) == 0) {
-      kvs_free(inst->table[i].value);
+      free(inst->table[i].value);
       inst->table[i].value = new_val;
       return 0;
     }
   }
 
-  kvs_free(new_val);
+  free(new_val);
   return -1;
 }
 
