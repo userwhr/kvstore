@@ -23,6 +23,9 @@ int recv_cb(int fd);
 int send_cb(int fd);
 
 int epfd = 0;
+int g_listen_fd = -1; /* Reactor 的 listen fd，暴露给外部使用 */
+int g_slave_fd =
+    -1; /* Slave 节点的 client fd，用于 eBPF forwarder 转发写命令 */
 struct timeval begin;
 
 struct conn conn_list[CONNECTION_SIZE] = {0};
@@ -151,13 +154,30 @@ int recv_cb(int fd) {
       curr_off =
           conn->send_off_queue[last_idx] + conn->send_len_queue[last_idx];
     }
-    int curr_len = handler(tokens, msg, paramCnt + 1, conn->wbuffer + curr_off);
+    kvs_result_t kvs_ret = kvs_filter_protocol(fd, tokens, msg, paramCnt + 1,
+                                               conn->wbuffer + curr_off);
+    int curr_len = kvs_ret.len;
+
+    /* 如果是 Slave 节点，保存 client fd 用于 eBPF forwarder */
+    if (kvs_ret.client_type == CLIENT_TYPE_SLAVE) {
+      g_slave_fd = fd;
+      // printf("[Reactor] Slave client fd=%d saved for eBPF forwarder\n", fd);
+    }
 
     // ====================== 释放解析分配的内存 ======================
     free(cmd);
     for (int i = 0; i < paramCnt; i++)
       free(params[i]);
     // ==============================================================
+
+    // 如果是 Slave 模式下收到 forwarder 转发的命令（fd == g_slave_fd），
+    // 不发响应，避免 Master 端 forwarder 不读导致 send() 阻塞 reactor
+    if (g_config.enable_slave && fd == g_slave_fd) {
+      memmove(conn->rbuffer, conn->rbuffer + oneRespLen,
+              conn->rlength - oneRespLen);
+      conn->rlength -= oneRespLen;
+      continue;
+    }
 
     // 你的发送队列、缓冲区移动逻辑（完全不变）
     if (conn->send_queue_cnt >= MAX_SEND_QUEUE) {
@@ -192,8 +212,7 @@ int send_cb(int fd) {
     uint32_t curr_len = conn->send_len_queue[conn->send_queue_head];
 
     // 2. 从偏移位置开始发送（分包发送）
-    // printf("send->%s", conn->wbuffer);
-    send_ret = send(fd, conn->wbuffer + curr_off, curr_len, 0);
+    send_ret = send(fd, conn->wbuffer + curr_off, curr_len, MSG_NOSIGNAL);
 
     if (send_ret <= 0) { // 发送失败
       close(fd);
@@ -207,16 +226,32 @@ int send_cb(int fd) {
     conn->send_queue_head = (conn->send_queue_head + 1) % MAX_SEND_QUEUE;
     conn->send_queue_cnt--;
   }
-
-  // 4. 所有响应发完：清空缓存，切回接收
-  memset(conn->wbuffer, 0, BUFFER_LENGTH);
-  set_event(fd, EPOLLIN, 0);
+  if (!g_config.enable_slave) {
+    // 4. 所有响应发完：清空缓存，切回接收
+    // 如果是 Slave 节点，从 epoll 移除，后续由 eBPF forwarder 子进程接管
+    if (fd == g_slave_fd) {
+      // printf("[Reactor] Slave fd=%d SYNC response sent, removing from
+      // epoll\n",
+      //        fd);
+      epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+    } else {
+      memset(conn->wbuffer, 0, BUFFER_LENGTH);
+      set_event(fd, EPOLLIN, 0);
+    }
+  } else {
+    memset(conn->wbuffer, 0, BUFFER_LENGTH);
+    set_event(fd, EPOLLIN, 0);
+  }
 
   return send_ret;
 }
 int init_server(unsigned short port) {
 
   int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+  /* 设置 SO_REUSEADDR，允许快速重用端口 */
+  int opt = 1;
+  setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
   struct sockaddr_in servaddr;
   servaddr.sin_family = AF_INET;
@@ -229,7 +264,9 @@ int init_server(unsigned short port) {
   }
 
   listen(sockfd, 10);
-  // printf("listen finshed: %d\n", sockfd); // 3
+
+  /* 保存为全局 listen fd */
+  g_listen_fd = sockfd;
 
   return sockfd;
 }
@@ -249,6 +286,13 @@ int react_entrence(unsigned short port, kvs_handler hd) {
     conn_list[sockfd].r_action.recv_callback = accept_cb;
 
     set_event(sockfd, EPOLLIN, 1);
+  }
+
+  /* 如果是 Slave 模式，将 g_slave_fd 注册到 epoll 接收写命令 */
+  if (g_config.enable_slave && g_slave_fd >= 0) {
+    // printf("[Reactor] Registering slave fd=%d to epoll for write commands\n",
+    //        g_slave_fd);
+    event_register(g_slave_fd, EPOLLIN);
   }
 
   gettimeofday(&begin, NULL);
@@ -278,9 +322,9 @@ int react_entrence(unsigned short port, kvs_handler hd) {
       if (events[i].events & EPOLLOUT) {
         conn_list[connfd].send_callback(connfd);
       }
-#if ENABLE_INCREMENTAL_PERSIST
-      uringProcessCqes(); // 执行回调函数,释放堆上资源
-#endif
+      if (g_config.enable_slab_pool == 1) {
+        uringProcessCqes(); // 执行回调函数,释放堆上资源
+      }
 #endif
     }
   }

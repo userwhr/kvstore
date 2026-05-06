@@ -257,11 +257,11 @@ static struct ibv_context *rdma_attach_device(void) {
     return NULL;
   }
 
-  printf("[RDMA] Found %d device(s):\n", num_devices);
+  // printf("[RDMA] Found %d device(s):\n", num_devices);
   struct ibv_device *target = NULL;
   for (int i = 0; i < num_devices; i++) {
     const char *name = ibv_get_device_name(dev_list[i]);
-    printf("[RDMA]   %d: %s\n", i, name);
+    // printf("[RDMA]   %d: %s\n", i, name);
     if (strcmp(name, "rxe0") == 0) {
       target = dev_list[i];
     }
@@ -269,7 +269,7 @@ static struct ibv_context *rdma_attach_device(void) {
 
   if (!target) {
     target = dev_list[0];
-    printf("[RDMA] rxe0 not found, using %s\n", ibv_get_device_name(target));
+    // printf("[RDMA] rxe0 not found, using %s\n", ibv_get_device_name(target));
   }
 
   struct ibv_context *verbs = ibv_open_device(target);
@@ -320,7 +320,7 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
   fseek(fp, 0, SEEK_END);
   file_size = ftell(fp);
   fseek(fp, 0, SEEK_SET);
-  printf("[RDMA Master] File size: %zu bytes\n", file_size);
+  // printf("[RDMA Master] File size: %zu bytes\n", file_size);
 
   /* ========== 第2步：创建 event channel 和 CM ID ========== */
   cm_channel = rdma_create_event_channel();
@@ -350,13 +350,13 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
 
   /* SoftRoCE 修复：手动绑定 verbs 设备 */
   if (!listen_id->verbs) {
-    printf("[RDMA Master] Manually attaching RDMA device...\n");
+    // printf("[RDMA Master] Manually attaching RDMA device...\n");
     listen_id->verbs = rdma_attach_device();
     if (!listen_id->verbs) {
       goto cleanup;
     }
-    printf("[RDMA Master] Attached to device: %s\n",
-           listen_id->verbs->device->name);
+    // printf("[RDMA Master] Attached to device: %s\n",
+    //        listen_id->verbs->device->name);
   }
 
   ret = rdma_listen(listen_id, 1);
@@ -364,7 +364,7 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
     fprintf(stderr, "rdma_listen failed: %s\n", strerror(errno));
     goto cleanup;
   }
-  printf("[RDMA Master] Listening on port %d...\n", rdma_port);
+  // printf("[RDMA Master] Listening on port %d...\n", rdma_port);
   fflush(stdout);
 
   /* ========== 第4步：等待 Slave 连接请求 ========== */
@@ -375,7 +375,7 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
   child_id = event->id;
   rdma_ack_cm_event(event);
   event = NULL;
-  printf("[RDMA Master] Connection request received\n");
+  // printf("[RDMA Master] Connection request received\n");
   fflush(stdout);
 
   /* 确保 child_id 有 verbs */
@@ -390,8 +390,8 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
     fprintf(stderr, "FATAL: Cannot get verbs for child_id\n");
     goto cleanup;
   }
-  printf("[RDMA Master] Child verbs device: %s\n",
-         child_id->verbs->device->name);
+  // printf("[RDMA Master] Child verbs device: %s\n",
+  //        child_id->verbs->device->name);
 
   /* ========== 第5步：初始化缓冲区 + 分配 RDMA 资源 ========== */
   ret = rdma_context_init(&ctx, RDMA_BUFFER_SIZE);
@@ -401,7 +401,7 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
   ret = rdma_alloc_resources(&ctx, child_id->verbs);
   if (ret)
     goto cleanup;
-  printf("[RDMA Master] RDMA resources allocated\n");
+  // printf("[RDMA Master] RDMA resources allocated\n");
   fflush(stdout);
 
   /* ========== 第6步：创建 QP（关键：在 accept 之前） ========== */
@@ -420,14 +420,14 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
     fprintf(stderr, "rdma_create_qp failed: %s\n", strerror(errno));
     goto cleanup;
   }
-  printf("[RDMA Master] QP created (QP num=%d)\n", child_id->qp->qp_num);
+  // printf("[RDMA Master] QP created (QP num=%d)\n", child_id->qp->qp_num);
   fflush(stdout);
 
   /* ========== 第7步：接受连接（带 conn_param） ========== */
   struct rdma_conn_param conn_param;
   build_conn_param(&conn_param);
 
-  printf("[RDMA Master] Accepting connection...\n");
+  // printf("[RDMA Master] Accepting connection...\n");
   fflush(stdout);
 
   ret = rdma_accept(child_id, &conn_param);
@@ -443,7 +443,7 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
     goto cleanup;
   rdma_ack_cm_event(event);
   event = NULL;
-  printf("[RDMA Master] Connection established!\n");
+  // printf("[RDMA Master] Connection established!\n");
   fflush(stdout);
 
   /* ========== 第9步：先 POST RECV，等待 Slave 发送请求 ========== */
@@ -465,15 +465,15 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
     fprintf(stderr, "ibv_post_recv failed: %s\n", strerror(ret));
     goto cleanup;
   }
-  printf("[RDMA Master] Waiting for Slave request...\n");
+  // printf("[RDMA Master] Waiting for Slave request...\n");
   fflush(stdout);
 
   /* 等待接收完成 */
   ret = rdma_wait_completions(&ctx, 1);
   if (ret)
     goto cleanup;
-  printf("[RDMA Master] Received request from Slave: \"%s\"\n",
-         (char *)ctx.buf);
+  // printf("[RDMA Master] Received request from Slave: \"%s\"\n",
+  //        (char *)ctx.buf);
 
   /* ========== 第10步：发送文件内容给 Slave ========== */
   /* 先发送文件大小（8 字节） */
@@ -503,7 +503,7 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
   ret = rdma_wait_completions(&ctx, 1);
   if (ret)
     goto cleanup;
-  printf("[RDMA Master] File size sent: %zu bytes\n", file_size);
+  // printf("[RDMA Master] File size sent: %zu bytes\n", file_size);
 
   /* 分块发送文件内容 */
   size_t total_sent = 0;
@@ -542,11 +542,11 @@ int rdma_master_send_file(const char *file_path, int rdma_port) {
       goto cleanup;
 
     total_sent += chunk_size;
-    printf("[RDMA Master] Sent chunk: %zu/%zu bytes (%.1f%%)\r", total_sent,
-           file_size, (double)total_sent / file_size * 100);
+    // printf("[RDMA Master] Sent chunk: %zu/%zu bytes (%.1f%%)\r", total_sent,
+    //        file_size, (double)total_sent / file_size * 100);
     fflush(stdout);
   }
-  printf("\n[RDMA Master] File transfer complete\n");
+  // printf("\n[RDMA Master] File transfer complete\n");
 
   ret = 0;
 
@@ -610,7 +610,7 @@ int rdma_slave_recv_file(const char *server_ip, int rdma_port, char **out_buf,
     fprintf(stderr, "rdma_create_id failed: %s\n", strerror(errno));
     goto cleanup;
   }
-  printf("[RDMA Slave] CM ID created\n");
+  // printf("[RDMA Slave] CM ID created\n");
 
   /* ========== 第2步：解析服务器地址 ========== */
   struct sockaddr_in server_addr;
@@ -634,7 +634,7 @@ int rdma_slave_recv_file(const char *server_ip, int rdma_port, char **out_buf,
     goto cleanup;
   rdma_ack_cm_event(event);
   event = NULL;
-  printf("[RDMA Slave] Address resolved to %s:%d\n", server_ip, rdma_port);
+  // printf("[RDMA Slave] Address resolved to %s:%d\n", server_ip, rdma_port);
 
   /* ========== 第3步：解析路由 ========== */
   ret = rdma_resolve_route(cm_id, 2000);
@@ -648,16 +648,16 @@ int rdma_slave_recv_file(const char *server_ip, int rdma_port, char **out_buf,
     goto cleanup;
   rdma_ack_cm_event(event);
   event = NULL;
-  printf("[RDMA Slave] Route resolved\n");
+  // printf("[RDMA Slave] Route resolved\n");
 
   /* SoftRoCE 修复：手动绑定 verbs 设备 */
   if (!cm_id->verbs) {
-    printf("[RDMA Slave] Manually attaching RDMA device...\n");
+    // printf("[RDMA Slave] Manually attaching RDMA device...\n");
     cm_id->verbs = rdma_attach_device();
     if (!cm_id->verbs) {
       goto cleanup;
     }
-    printf("[RDMA Slave] Attached to device: %s\n", cm_id->verbs->device->name);
+    // printf("[RDMA Slave] Attached to device: %s\n", cm_id->verbs->device->name);
   }
 
   /* ========== 第4步：初始化缓冲区 + 分配 RDMA 资源 ========== */
@@ -668,7 +668,7 @@ int rdma_slave_recv_file(const char *server_ip, int rdma_port, char **out_buf,
   ret = rdma_alloc_resources(&ctx, cm_id->verbs);
   if (ret)
     goto cleanup;
-  printf("[RDMA Slave] RDMA resources allocated\n");
+  // printf("[RDMA Slave] RDMA resources allocated\n");
 
   /* ========== 第5步：创建 QP（关键：在 connect 之前） ========== */
   struct ibv_qp_init_attr qp_attr;
@@ -686,7 +686,7 @@ int rdma_slave_recv_file(const char *server_ip, int rdma_port, char **out_buf,
     fprintf(stderr, "rdma_create_qp failed: %s\n", strerror(errno));
     goto cleanup;
   }
-  printf("[RDMA Slave] QP created (QP num=%d)\n", cm_id->qp->qp_num);
+  // printf("[RDMA Slave] QP created (QP num=%d)\n", cm_id->qp->qp_num);
 
   /* ========== 第6步：连接 Master（带 conn_param） ========== */
   struct rdma_conn_param conn_param;
@@ -698,7 +698,7 @@ int rdma_slave_recv_file(const char *server_ip, int rdma_port, char **out_buf,
             errno);
     goto cleanup;
   }
-  printf("[RDMA Slave] Connecting...\n");
+  // printf("[RDMA Slave] Connecting...\n");
 
   /* ========== 第7步：等待连接建立 ========== */
   ret = rdma_wait_cm_event(cm_channel, &event, RDMA_CM_EVENT_ESTABLISHED);
@@ -706,7 +706,7 @@ int rdma_slave_recv_file(const char *server_ip, int rdma_port, char **out_buf,
     goto cleanup;
   rdma_ack_cm_event(event);
   event = NULL;
-  printf("[RDMA Slave] Connection established!\n");
+  // printf("[RDMA Slave] Connection established!\n");
 
   /* ========== 第8步：发送请求给 Master ========== */
   const char *request = "SYNC_REQUEST";
@@ -737,7 +737,7 @@ int rdma_slave_recv_file(const char *server_ip, int rdma_port, char **out_buf,
   ret = rdma_wait_completions(&ctx, 1);
   if (ret)
     goto cleanup;
-  printf("[RDMA Slave] Request sent to Master\n");
+  // printf("[RDMA Slave] Request sent to Master\n");
 
   /* ========== 第9步：接收文件大小（8 字节） ========== */
   struct ibv_sge recv_sge;
@@ -771,8 +771,8 @@ int rdma_slave_recv_file(const char *server_ip, int rdma_port, char **out_buf,
     goto cleanup;
   }
 
-  printf("[RDMA Slave] File size to receive: %zu bytes (%.2f MB)\n", file_size,
-         (double)file_size / (1024 * 1024));
+  // printf("[RDMA Slave] File size to receive: %zu bytes (%.2f MB)\n", file_size,
+  //        (double)file_size / (1024 * 1024));
 
   /* ========== 第10步：分配最终数据缓冲区 ========== */
   char *data_buf = (char *)malloc(file_size);
@@ -815,12 +815,12 @@ int rdma_slave_recv_file(const char *server_ip, int rdma_port, char **out_buf,
     total_recv += chunk_size;
 
     if (chunk_id % 10 == 0 || total_recv >= file_size) {
-      printf("[RDMA Slave] Progress: %zu/%zu bytes (%.1f%%)\r", total_recv,
-             file_size, (double)total_recv / file_size * 100);
+      // printf("[RDMA Slave] Progress: %zu/%zu bytes (%.1f%%)\r", total_recv,
+      //        file_size, (double)total_recv / file_size * 100);
       fflush(stdout);
     }
   }
-  printf("\n[RDMA Slave] Data receive complete (%zu bytes)\n", file_size);
+  // printf("\n[RDMA Slave] Data receive complete (%zu bytes)\n", file_size);
 
   /* 设置输出参数 */
   *out_buf = data_buf;
@@ -885,7 +885,7 @@ int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port) {
     return -1;
   }
 
-  printf("[RDMA Master] Memory data size: %zu bytes\n", data_size);
+  // printf("[RDMA Master] Memory data size: %zu bytes\n", data_size);
 
   /* ========== 第1步：创建 event channel 和 CM ID ========== */
   cm_channel = rdma_create_event_channel();
@@ -915,13 +915,13 @@ int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port) {
 
   /* SoftRoCE 修复：手动绑定 verbs 设备 */
   if (!listen_id->verbs) {
-    printf("[RDMA Master] Manually attaching RDMA device...\n");
+    // printf("[RDMA Master] Manually attaching RDMA device...\n");
     listen_id->verbs = rdma_attach_device();
     if (!listen_id->verbs) {
       goto cleanup;
     }
-    printf("[RDMA Master] Attached to device: %s\n",
-           listen_id->verbs->device->name);
+    // printf("[RDMA Master] Attached to device: %s\n",
+    //        listen_id->verbs->device->name);
   }
 
   ret = rdma_listen(listen_id, 1);
@@ -929,7 +929,7 @@ int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port) {
     fprintf(stderr, "rdma_listen failed: %s\n", strerror(errno));
     goto cleanup;
   }
-  printf("[RDMA Master] Listening on port %d...\n", rdma_port);
+  // printf("[RDMA Master] Listening on port %d...\n", rdma_port);
   fflush(stdout);
 
   /* ========== 第3步：等待 Slave 连接请求 ========== */
@@ -940,7 +940,7 @@ int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port) {
   child_id = event->id;
   rdma_ack_cm_event(event);
   event = NULL;
-  printf("[RDMA Master] Connection request received\n");
+  // printf("[RDMA Master] Connection request received\n");
   fflush(stdout);
 
   /* 确保 child_id 有 verbs */
@@ -964,7 +964,7 @@ int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port) {
   ret = rdma_alloc_resources(&ctx, child_id->verbs);
   if (ret)
     goto cleanup;
-  printf("[RDMA Master] RDMA resources allocated\n");
+  // printf("[RDMA Master] RDMA resources allocated\n");
   fflush(stdout);
 
   /* ========== 第5步：创建 QP（关键：在 accept 之前） ========== */
@@ -983,14 +983,14 @@ int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port) {
     fprintf(stderr, "rdma_create_qp failed: %s\n", strerror(errno));
     goto cleanup;
   }
-  printf("[RDMA Master] QP created (QP num=%d)\n", child_id->qp->qp_num);
+  // printf("[RDMA Master] QP created (QP num=%d)\n", child_id->qp->qp_num);
   fflush(stdout);
 
   /* ========== 第6步：接受连接（带 conn_param） ========== */
   struct rdma_conn_param conn_param;
   build_conn_param(&conn_param);
 
-  printf("[RDMA Master] Accepting connection...\n");
+  // printf("[RDMA Master] Accepting connection...\n");
   fflush(stdout);
 
   ret = rdma_accept(child_id, &conn_param);
@@ -1006,7 +1006,7 @@ int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port) {
     goto cleanup;
   rdma_ack_cm_event(event);
   event = NULL;
-  printf("[RDMA Master] Connection established!\n");
+  // printf("[RDMA Master] Connection established!\n");
   fflush(stdout);
 
   /* ========== 第8步：先 POST RECV，等待 Slave 发送请求 ========== */
@@ -1028,15 +1028,15 @@ int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port) {
     fprintf(stderr, "ibv_post_recv failed: %s\n", strerror(ret));
     goto cleanup;
   }
-  printf("[RDMA Master] Waiting for Slave request...\n");
+  // printf("[RDMA Master] Waiting for Slave request...\n");
   fflush(stdout);
 
   /* 等待接收完成 */
   ret = rdma_wait_completions(&ctx, 1);
   if (ret)
     goto cleanup;
-  printf("[RDMA Master] Received request from Slave: \"%s\"\n",
-         (char *)ctx.buf);
+  // printf("[RDMA Master] Received request from Slave: \"%s\"\n",
+  //        (char *)ctx.buf);
 
   /* ========== 第9步：发送内存数据给 Slave ========== */
   /* 先发送数据大小（8 字节），与 Slave 端 rdma_slave_recv_file 协议一致 */
@@ -1066,7 +1066,7 @@ int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port) {
   ret = rdma_wait_completions(&ctx, 1);
   if (ret)
     goto cleanup;
-  printf("[RDMA Master] Data size sent: %zu bytes\n", data_size);
+  // printf("[RDMA Master] Data size sent: %zu bytes\n", data_size);
 
   /* 分块发送数据内容（从内存 data 中拷贝） */
   size_t total_sent = 0;
@@ -1102,11 +1102,11 @@ int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port) {
       goto cleanup;
 
     total_sent += chunk_size;
-    printf("[RDMA Master] Sent chunk: %zu/%zu bytes (%.1f%%)\r", total_sent,
-           data_size, (double)total_sent / data_size * 100);
+    // printf("[RDMA Master] Sent chunk: %zu/%zu bytes (%.1f%%)\r", total_sent,
+    //        data_size, (double)total_sent / data_size * 100);
     fflush(stdout);
   }
-  printf("\n[RDMA Master] Memory data transfer complete\n");
+  // printf("\n[RDMA Master] Memory data transfer complete\n");
 
   ret = 0;
 
@@ -1152,22 +1152,168 @@ typedef struct {
  */
 void *rdma_master_send_file_thread(void *arg) {
   rdma_thread_arg_t *targ = (rdma_thread_arg_t *)arg;
-  printf("[SYNC] RDMA transfer thread started, file=%s, port=%d\n",
-         targ->file_path, targ->rdma_port);
+  // printf("[SYNC] RDMA transfer thread started, file=%s, port=%d\n",
+  //        targ->file_path, targ->rdma_port);
 
   int ret = rdma_master_send_file(targ->file_path, targ->rdma_port);
   if (ret == 0) {
-    printf("[SYNC] RDMA transfer completed successfully\n");
+    // printf("[SYNC] RDMA transfer completed successfully\n");
   } else {
     fprintf(stderr, "[SYNC] RDMA transfer failed\n");
   }
 
   /* 传输完成，释放同步锁，恢复写操作 */
   g_syncing = 0;
-  printf("[SYNC] Sync complete, write operations resumed\n");
+  // printf("[SYNC] Sync complete, write operations resumed\n");
 
   free(arg);
   return NULL;
+}
+
+// ====================== Master 端：等待 Slave 连接并同步 ======================
+
+/*
+ * Master 端：等待 Slave 通过 TCP 连接并发送 SYNC 命令，
+ * 然后通过 RDMA 传输内存数据给 Slave
+ *
+ * 流程：
+ *   1. 如果 listen_fd < 0，自己创建 TCP listen socket 并绑定 tcp_port
+ *   2. 在 listen_fd 上 accept 等待 Slave 连接
+ *   3. 接收 Slave 的 SYNC 命令，回复 +OK
+ *   4. 通过 RDMA 发送内存数据给 Slave
+ *   5. 返回 Slave 的 TCP 连接 fd（用于后续 eBPF 增量同步）
+ *
+ * 注意：如果传入有效的 listen_fd，调用者负责关闭它；
+ *       如果 listen_fd < 0，函数内部创建并关闭。
+ */
+int rdma_master_wait_slave_and_sync(const void *data, size_t data_size,
+                                    int listen_fd, int rdma_port, int *slave_fd) {
+  int internal_listen_fd = -1;
+  int conn_fd = -1;
+  int ret = -1;
+  int should_close_listen = 0; /* 是否由本函数关闭 listen_fd */
+
+  *slave_fd = -1;
+
+  /* ========== 第1步：获取 listen socket ========== */
+  if (listen_fd < 0) {
+    /* 没有外部 listen fd，自己创建 */
+    // printf("[Master] Creating TCP listen socket on port...\n");
+
+    internal_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (internal_listen_fd < 0) {
+      perror("socket failed");
+      return -1;
+    }
+
+    int opt = 1;
+    setsockopt(internal_listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(0); /* 随机端口 */
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(internal_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+      perror("bind failed");
+      goto cleanup;
+    }
+
+    if (listen(internal_listen_fd, 1) < 0) {
+      perror("listen failed");
+      goto cleanup;
+    }
+
+    /* 获取实际绑定的端口 */
+    struct sockaddr_in bound_addr;
+    socklen_t addr_len = sizeof(bound_addr);
+    getsockname(internal_listen_fd, (struct sockaddr *)&bound_addr, &addr_len);
+    // printf("[Master] Internal listen fd created on port %d\n",
+    //        ntohs(bound_addr.sin_port));
+
+    listen_fd = internal_listen_fd;
+    should_close_listen = 1;
+  } else {
+    // printf("[Master] Using external listen fd=%d\n", listen_fd);
+    should_close_listen = 0; /* 外部 fd，不由我们关闭 */
+  }
+
+  /* ========== 第2步：等待 Slave 连接 ========== */
+  // printf("[Master] Waiting for Slave SYNC connection...\n");
+
+  struct sockaddr_in client_addr;
+  socklen_t client_len = sizeof(client_addr);
+  conn_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
+  if (conn_fd < 0) {
+    perror("accept failed");
+    goto cleanup;
+  }
+
+  char client_ip[64];
+  inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
+  // printf("[Master] Slave connected from %s:%d\n", client_ip,
+  //        ntohs(client_addr.sin_port));
+
+  /* ========== 第3步：接收 SYNC 命令 ========== */
+  char buf[1024] = {0};
+  int recv_ret = recv(conn_fd, buf, sizeof(buf) - 1, 0);
+  if (recv_ret <= 0) {
+    perror("recv SYNC failed");
+    goto cleanup;
+  }
+  buf[recv_ret] = '\0';
+  // printf("[Master] Received from Slave: %s\n", buf);
+
+  /* 检查是否为 SYNC 命令 */
+  if (strstr(buf, "SYNC") == NULL) {
+    fprintf(stderr, "[Master] Unexpected command from Slave: %s\n", buf);
+    goto cleanup;
+  }
+
+  /* ========== 第4步：回复 +OK ========== */
+  const char *ok_resp = "+OK\r\n";
+  int send_ret = send(conn_fd, ok_resp, strlen(ok_resp), 0);
+  if (send_ret <= 0) {
+    perror("send +OK failed");
+    goto cleanup;
+  }
+  // printf("[Master] SYNC acknowledged, sent +OK\n");
+
+  /* 如果 listen_fd 是内部创建的，关闭它 */
+  if (should_close_listen && internal_listen_fd >= 0) {
+    close(internal_listen_fd);
+    internal_listen_fd = -1;
+  }
+  /* 注意：如果是外部传入的 listen_fd，不关闭，由 Reactor 负责 */
+
+  /* ========== 第5步：通过 RDMA 发送内存数据给 Slave ========== */
+  // printf("[Master] Starting RDMA data transfer on port %d...\n", rdma_port);
+
+  ret = rdma_master_send_mem(data, data_size, rdma_port);
+  if (ret != 0) {
+    fprintf(stderr, "[Master] RDMA data transfer failed\n");
+    goto cleanup;
+  }
+  // printf("[Master] RDMA data transfer complete (%zu bytes)\n", data_size);
+
+  /* 返回 Slave 的 TCP 连接 fd（用于后续 eBPF 转发写命令） */
+  *slave_fd = conn_fd;
+  conn_fd = -1; /* 防止 cleanup 中关闭 */
+
+  ret = 0;
+  goto done;
+
+cleanup:
+  ret = -1;
+
+done:
+  if (conn_fd >= 0)
+    close(conn_fd);
+  if (internal_listen_fd >= 0)
+    close(internal_listen_fd);
+  /* 外部 listen_fd 不由我们关闭 */
+  return ret;
 }
 
 /*
@@ -1175,19 +1321,19 @@ void *rdma_master_send_file_thread(void *arg) {
  */
 void *rdma_master_send_mem_thread(void *arg) {
   rdma_mem_thread_arg_t *targ = (rdma_mem_thread_arg_t *)arg;
-  printf("[SYNC] RDMA mem transfer thread started, size=%zu, port=%d\n",
-         targ->data_size, targ->rdma_port);
+  // printf("[SYNC] RDMA mem transfer thread started, size=%zu, port=%d\n",
+  //        targ->data_size, targ->rdma_port);
 
   int ret = rdma_master_send_mem(targ->data, targ->data_size, targ->rdma_port);
   if (ret == 0) {
-    printf("[SYNC] RDMA mem transfer completed successfully\n");
+    // printf("[SYNC] RDMA mem transfer completed successfully\n");
   } else {
     fprintf(stderr, "[SYNC] RDMA mem transfer failed\n");
   }
 
   /* 传输完成，释放同步锁，恢复写操作 */
   g_syncing = 0;
-  printf("[SYNC] Sync complete, write operations resumed\n");
+  // printf("[SYNC] Sync complete, write operations resumed\n");
 
   free(arg);
   return NULL;

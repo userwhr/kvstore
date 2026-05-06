@@ -15,4 +15,6 @@ plans
 testrdma
 slave
 master
-dirac-symbol-index
+.dirac-symbol-index
+slave
+master

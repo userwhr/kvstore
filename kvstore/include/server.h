@@ -32,5 +32,6 @@ typedef struct conn {
   } r_action;
   RCALLBACK send_callback;
 } conn_t;
-
+int set_event(int fd, int event, int flag);
+int event_register(int fd, int event);
 #endif

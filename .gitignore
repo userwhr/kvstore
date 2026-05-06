@@ -1,2 +1,4 @@
 jemalloc-5.3.1
 slave
+.vscode
+libbpf-1.7.0

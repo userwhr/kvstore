@@ -7,7 +7,7 @@
 
 // ===================== 固定配置（和Python完全一致） =====================
 #define SERVER_IP "192.168.140.134"
-#define SERVER_PORT 2000
+#define SERVER_PORT 3000
 #define TEST_COUNT 10 // 固定1000条测试
 #define BUF_SIZE 4096
 
