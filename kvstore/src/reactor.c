@@ -154,8 +154,16 @@ int recv_cb(int fd) {
       curr_off =
           conn->send_off_queue[last_idx] + conn->send_len_queue[last_idx];
     }
-    kvs_result_t kvs_ret = kvs_filter_protocol(fd, tokens, msg, paramCnt + 1,
-                                               conn->wbuffer + curr_off);
+    kvs_result_t kvs_ret;
+    if (g_slave_fd == fd && g_config.enable_slave == 1) {
+      /* Slave 端收到 Master 转发的写命令，只执行不回复 */
+      char tmp_response[1024];
+      kvs_ret =
+          kvs_filter_protocol(fd, tokens, msg, paramCnt + 1, tmp_response);
+    } else {
+      kvs_ret = kvs_filter_protocol(fd, tokens, msg, paramCnt + 1,
+                                    conn->wbuffer + curr_off);
+    }
     int curr_len = kvs_ret.len;
 
     /* 如果是 Slave 节点，保存 client fd 用于 eBPF forwarder */
@@ -168,16 +176,8 @@ int recv_cb(int fd) {
     free(cmd);
     for (int i = 0; i < paramCnt; i++)
       free(params[i]);
-    // ==============================================================
 
-    // 如果是 Slave 模式下收到 forwarder 转发的命令（fd == g_slave_fd），
-    // 不发响应，避免 Master 端 forwarder 不读导致 send() 阻塞 reactor
-    if (g_config.enable_slave && fd == g_slave_fd) {
-      memmove(conn->rbuffer, conn->rbuffer + oneRespLen,
-              conn->rlength - oneRespLen);
-      conn->rlength -= oneRespLen;
-      continue;
-    }
+    /* Slave 端收到 Master 转发的命令，执行后回复（不再跳过发送队列） */
 
     // 你的发送队列、缓冲区移动逻辑（完全不变）
     if (conn->send_queue_cnt >= MAX_SEND_QUEUE) {
@@ -212,9 +212,12 @@ int send_cb(int fd) {
     uint32_t curr_len = conn->send_len_queue[conn->send_queue_head];
 
     // 2. 从偏移位置开始发送（分包发送）
-    send_ret = send(fd, conn->wbuffer + curr_off, curr_len, MSG_NOSIGNAL);
+    send_ret = send(fd, conn->wbuffer + curr_off, curr_len, 0);
 
-    if (send_ret <= 0) { // 发送失败
+    if (send_ret <= 0) {
+      if (send_ret < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        break; /* 发送缓冲区满，等下次 EPOLLOUT 再发 */
+      }
       close(fd);
       epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
       return send_ret;

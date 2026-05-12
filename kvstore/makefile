@@ -25,7 +25,7 @@ debug:compile
 slave:compile
 	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS)  -o slave
 test:
-	gcc hiredis_test.c $(Jemalloc) -o kv_client -lhiredis
+	gcc -O2 hiredis_test.c -o kv_client -lhiredis -lpthread
 
 # ===================== eBPF 增量同步 =====================
 ebpf: $(EBPF_BUILD)ebpf_inc_sync.o

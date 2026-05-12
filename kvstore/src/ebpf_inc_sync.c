@@ -32,6 +32,16 @@ struct {
   __uint(value_size, sizeof(int));
 } cmd_events SEC(".maps");
 
+/* per-cpu buffer，避免占用 eBPF 栈空间
+ * 大小设为 1500 字节，覆盖单个 TCP 段的最大 payload */
+#define BUF_SIZE 1500
+struct {
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u8[BUF_SIZE]);
+} buf_map SEC(".maps");
+
 /* ===================== 写命令识别 ===================== */
 static __always_inline int is_write_command(const char *cmd, int len,
                                             const char *data_end) {
@@ -225,19 +235,23 @@ int ebpf_inc_sync_func(struct xdp_md *ctx) {
   if (payload_len <= 0)
     return XDP_PASS;
 
-  /* 复制到栈上，通过 perf_event_output 发送到用户态 */
+  /* 通过 perf_event_output 发送到用户态 */
   __u32 key = 0;
   __u64 *count = bpf_map_lookup_elem(&cmd_count, &key);
   if (count)
     __sync_fetch_and_add(count, 1);
 
-  char buf[128];
-  __builtin_memset(buf, 0, sizeof(buf));
+  /* 从 percpu array map 获取 buffer，不占栈空间 */
+  __u8 *buf = bpf_map_lookup_elem(&buf_map, &key);
+  if (!buf)
+    return XDP_PASS;
+
   unsigned int copy_len = (unsigned int)payload_len;
-  copy_len &= 0x7F;
+  if (copy_len > BUF_SIZE - 1)
+    copy_len = BUF_SIZE - 1;
 
 #pragma unroll
-  for (unsigned int i = 0; i < 128; i++) {
+  for (unsigned int i = 0; i < BUF_SIZE; i++) {
     if (i >= copy_len)
       break;
     if (payload + i >= payload_end)
