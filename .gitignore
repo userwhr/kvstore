@@ -1,4 +1,42 @@
-jemalloc-5.3.1
+# 编译生成的二进制文件
+master
 slave
-.vscode
-libbpf-1.7.0
+kv_client
+test/benchmark
+kvstore
+debug
+
+# 构建产物
+build/
+*.o
+*.a
+*.so
+
+# 日志
+log/
+
+# 测试文件
+
+
+# 计划/调试目录
+plans/
+
+# 第三方库
+jemalloc-5.3.1/
+
+# Python 测试/工具脚本
+netassit.py
+pytest.py
+
+# VSCode 配置
+.vscode/
+
+# Claude Code
+.claude/
+
+# 核心转储
+core
+core.*
+
+# Dirac 索引
+.dirac-symbol-index

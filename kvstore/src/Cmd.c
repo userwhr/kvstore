@@ -1,7 +1,0 @@
-// 指令集（和宏下标严格对应）
-const char *command[] = {"set",   "get",     "del",   "mod",   "exist",
-                         "rset",  "rget",    "rdel",  "rmod",  "rexist",
-                         "hset",  "hget",    "hdel",  "hmod",  "hexist",
-                         "skset", "skget",   "skdel", "skmod", "skexist",
-                         "save",  "COMMAND", "SYNC"};
-int COMMAND_COUNT = (sizeof(command) / sizeof(command[0]));
