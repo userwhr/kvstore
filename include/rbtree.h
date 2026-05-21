@@ -47,6 +47,7 @@ struct _KvsRbtree {
   KvsRbtreeNode *root;         // 根节点
   KvsRbtreeNode *nil;          // 哨兵节点（替代NULL，简化边界处理）
   KvsRbtreeKeyCmpFunc key_cmp; // 键比较函数
+  int count;                   // 已存储的 kv 对数量
 };
 
 // 对外暴露的红黑树类型别名（保持兼容）

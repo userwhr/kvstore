@@ -29,6 +29,7 @@
 
 /* ── 全局配置 ── */
 static const char *g_host    = "127.0.0.1";
+static const char *g_bind    = NULL;      /* -b 绑定源地址 */
 static int         g_port    = 2000;
 static int         g_conns   = 50;       /* -c */
 static int         g_total   = 100000;   /* -n */
@@ -92,8 +93,8 @@ static int encode_resp(char *buf, int bufsz, const char *cmd, const char *key, c
             strlen(cmd), cmd, strlen(key), key);
 }
 
-/* ── 创建非阻塞 TCP 连接 ── */
-static int create_conn(const char *host, int port) {
+/* ── 创建 TCP 连接 ── */
+static int create_conn(const char *host, int port, const char *bind_addr) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
 
@@ -105,6 +106,19 @@ static int create_conn(const char *host, int port) {
         .sin_port   = htons(port),
     };
     inet_pton(AF_INET, host, &addr.sin_addr);
+
+    /* 指定 -b 时绑定源地址，确保不走 lo 网卡 */
+    if (bind_addr) {
+        struct sockaddr_in src = {
+            .sin_family = AF_INET,
+            .sin_port   = htons(0),
+        };
+        inet_pton(AF_INET, bind_addr, &src.sin_addr);
+        if (bind(fd, (struct sockaddr *)&src, sizeof(src)) < 0) {
+            close(fd);
+            return -1;
+        }
+    }
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
@@ -236,7 +250,7 @@ static void run_bench(const char *cmd_name, cmd_type_t type) {
 
     /* 创建所有连接 */
     for (int i = 0; i < g_conns; i++) {
-        int fd = create_conn(g_host, g_port);
+        int fd = create_conn(g_host, g_port, g_bind);
         if (fd < 0) {
             fprintf(stderr, "  连接失败 #%d: %s\n", i, strerror(errno));
             /* 清理已创建的 */
@@ -385,6 +399,7 @@ static void usage(const char *prog) {
     printf("用法: %s [选项]\n", prog);
     printf("选项:\n");
     printf("  -H <主机>     服务器地址 (默认: 127.0.0.1)\n");
+    printf("  -b <地址>     绑定源地址，用于指定出口网卡\n");
     printf("  -p <端口>     服务器端口 (默认: 2000)\n");
     printf("  -c <并发数>   并发连接数 (默认: 50)\n");
     printf("  -n <请求数>   总请求数   (默认: 100000)\n");
@@ -433,9 +448,10 @@ int main(int argc, char *argv[]) {
     const char *cmd_arg = "set";
 
     int opt;
-    while ((opt = getopt(argc, argv, "H:p:c:n:t:q")) != -1) {
+    while ((opt = getopt(argc, argv, "H:b:p:c:n:t:q")) != -1) {
         switch (opt) {
         case 'H': g_host  = optarg;          break;
+        case 'b': g_bind  = optarg;          break;
         case 'p': g_port  = atoi(optarg);    break;
         case 'c': g_conns = atoi(optarg);    break;
         case 'n': g_total = atoi(optarg);    break;

@@ -3,8 +3,8 @@
 #ifndef __SERVER_H__
 #define __SERVER_H__
 
-#define BUFFER_LENGTH 1024 * 10
-#define MAX_SEND_QUEUE 64
+#define BUFFER_LENGTH (1024 * 10)
+#define MAX_SEND_QUEUE 256
 
 typedef int (*RCALLBACK)(int fd);
 

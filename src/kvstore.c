@@ -663,7 +663,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
                     {"skget", 2, "readonly"},  {"skdel", 2, "write"},
                     {"skmod", 3, "write"},     {"skexist", 2, "readonly"},
                     {"save", 1, "write"},      {"command", 1, "readonly"},
-                    {"flushall", 1, "write"}};
+                    {"flushall", 1, "write"},  {"dbcount", 1, "readonly"}};
     int cmd_count = sizeof(cmd_info) / sizeof(cmd_info[0]);
 
     // 1. 数组头部
@@ -749,6 +749,23 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
       skiplist_creat(global_skiplist);
     }
     length = sprintf(response, "+OK\r\n");
+    break;
+  }
+  case DBCOUNT: {
+    if (count != 1) {
+      length = sprintf(response, "-syntax error\r\n");
+      break;
+    }
+    int array_cnt = global_array ? global_array->total : 0;
+    int rbtree_cnt = global_rbtree ? global_rbtree->count : 0;
+    int hash_cnt = global_hash ? global_hash->count : 0;
+    int skiplist_cnt = global_skiplist ? global_skiplist->count : 0;
+    int total = array_cnt + rbtree_cnt + hash_cnt + skiplist_cnt;
+    char info[256];
+    int info_len = snprintf(info, sizeof(info),
+        "array:%d rbtree:%d hash:%d skiplist:%d total:%d",
+        array_cnt, rbtree_cnt, hash_cnt, skiplist_cnt, total);
+    length = sprintf(response, "$%d\r\n%s\r\n", info_len, info);
     break;
   }
   // 未知命令

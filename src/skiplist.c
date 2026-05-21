@@ -55,6 +55,7 @@ int skiplist_creat(kvs_skiplist_t *inst) {
   // 初始化跳表结构体
   inst->max_level = MAX_LEVEL;
   inst->level = 1;
+  inst->count = 0;
 
   // 创建头节点（key/value为空）
   inst->header = create_node("", "", MAX_LEVEL);
@@ -141,6 +142,7 @@ int skiplist_set(kvs_skiplist_t *inst, char *key, char *value) {
     update[i]->forward[i] = new_node;
   }
 
+  inst->count++;
   return 0;
 }
 
@@ -200,6 +202,7 @@ int skiplist_del(kvs_skiplist_t *inst, char *key) {
 
   // 释放节点内存
   free_node(current);
+  inst->count--;
 
   // 更新跳表的最大层数（如果需要）
   while (inst->level > 1 && inst->header->forward[inst->level - 1] == NULL) {

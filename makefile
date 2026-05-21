@@ -19,21 +19,23 @@ BPF_HEADERS = -I/usr/include/x86_64-linux-gnu
 EBPF_LIBS = -lbpf -lelf -lz
 
 kvstore:compile ebpf
-	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS)  -o master
+	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS) $(Jemalloc) -o master
 debug:compile
-	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS)  -o debug
+	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS) $(Jemalloc) -o debug
 slave:compile
-	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS)  -o slave
+	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS) $(Jemalloc) -o slave
+nojemalloc:compile ebpf
+	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS) -o master
 test:
 	gcc -O2 hiredis_test.c -o kv_client -lhiredis -lpthread
 bench:
 	gcc -O2 test/benchmark.c -o test/benchmark
 
 # ===================== eBPF 增量同步 =====================
-ebpf: $(EBPF_BUILD)ebpf_inc_sync.o
+ebpf: $(EBPF_BUILD)XDP.bpf.o
 	@echo "eBPF BPF程序编译完成！"
 
-$(EBPF_BUILD)ebpf_inc_sync.o: $(SRC)ebpf_inc_sync.c
+$(EBPF_BUILD)XDP.bpf.o: $(SRC)XDP.bpf.c
 	@mkdir -p $(EBPF_BUILD)
 	$(CLANG) $(BPF_CFLAGS) $(BPF_HEADERS) -c $< -o $@
 

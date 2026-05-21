@@ -405,6 +405,7 @@ KvsRbtreeErrCode rbtree_create(kvs_rbtree_t *inst) {
   // 初始化根节点和比较函数
   inst->root = inst->nil;
   inst->key_cmp = rbtree_str_key_cmp; // 默认字符键比较
+  inst->count = 0;
 
   return KVS_RBTREE_SUCCESS;
 }
@@ -465,6 +466,7 @@ KvsRbtreeErrCode rbtree_set(kvs_rbtree_t *inst, const char *key,
 
   // 插入节点
   rbtree_insert_node(inst, new_node);
+  inst->count++;
   return KVS_RBTREE_SUCCESS;
 }
 
@@ -500,6 +502,7 @@ KvsRbtreeErrCode rbtree_del(kvs_rbtree_t *inst, const char *key) {
     free(del_node->key);
     free(del_node->value);
     free(del_node);
+    inst->count--;
   }
   return KVS_RBTREE_SUCCESS;
 }

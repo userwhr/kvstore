@@ -255,7 +255,8 @@ int AOF_commands_from_mmap(file_content_t *fc) {
   // ======================
   while (processed < total_size) {
     char *curr_data = mmap_data + processed; // 当前未处理的指令起始位置
-    int oneRespLen = getOneRespLen(curr_data);
+    int remaining = total_size - processed;
+    int oneRespLen = getOneRespLen(curr_data, remaining);
 
     // 无效指令/解析失败，退出
     if (oneRespLen <= 0 || (processed + oneRespLen) > total_size) {

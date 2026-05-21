@@ -11,6 +11,7 @@ typedef struct SkipList {
   int level;     // 当前跳表最大层数
   int max_level; // 跳表最大支持层数
   Node *header;  // 头节点
+  int count;     // 已存储的 kv 对数量
 } SkipList;
 typedef SkipList kvs_skiplist_t;
 

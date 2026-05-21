@@ -84,6 +84,10 @@ int accept_cb(int fd) {
   int opt = 1;
   setsockopt(clientfd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
 
+  /* 重置连接状态，防止 fd 复用时继承旧连接的脏数据 */
+  memset(&conn_list[clientfd], 0, sizeof(conn_t));
+  conn_list[clientfd].fd = clientfd;
+
   event_register(clientfd, EPOLLIN); // | EPOLLET
 
   if ((clientfd % 1000) == 0) {
@@ -144,7 +148,9 @@ int recv_cb(int fd) {
 
     // ====================== 你的原有逻辑 ======================
     // ✅ msg 正常拷贝完整的原始报文，没有任何破坏！
-    int oneRespLen = getOneRespLen(conn->rbuffer);
+    int oneRespLen = getOneRespLen(conn->rbuffer, conn->rlength);
+    if (oneRespLen <= 0)
+      break;
     char msg[oneRespLen + 1];
     memcpy(msg, conn->rbuffer, oneRespLen); // 原始数据完整！
     msg[oneRespLen] = '\0';
@@ -163,6 +169,11 @@ int recv_cb(int fd) {
         last_idx = MAX_SEND_QUEUE - 1;
       curr_off =
           conn->send_off_queue[last_idx] + conn->send_len_queue[last_idx];
+    }
+    /* 防止 wbuffer / 发送队列溢出，停止解析等 send_cb 排空 */
+    if (curr_off + 512 > BUFFER_LENGTH ||
+        conn->send_queue_cnt >= MAX_SEND_QUEUE) {
+      break;
     }
     kvs_result_t kvs_ret;
     if (g_slave_fd == fd && g_config.enable_slave == 1) {

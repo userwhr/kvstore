@@ -22,7 +22,7 @@ void tokenPoolInit(void) {
 }
 
 static char *tokenPoolAlloc(int len) {
-  if (len > TOKEN_BUF_SIZE || token_free_top <= 0)
+  if (len >= TOKEN_BUF_SIZE || token_free_top <= 0)
     return NULL;                          /* 超大 token 或池耗尽，走 malloc */
   return token_free_stack[--token_free_top];
 }
@@ -135,31 +135,39 @@ int parseRespKv(char *resp, char **outCmd, char **params, int *paramCnt,
 // ======================
 // 功能：解析一段缓冲区，返回【第一条完整RESP命令】占用的总字节数
 // 返回值：>0 表示有效长度，=0 表示数据不完整/协议非法
-int getOneRespLen(char *buf) {
-  if (buf == NULL || *buf != '*') {
+int getOneRespLen(char *buf, int bufLen) {
+  if (buf == NULL || bufLen <= 0 || *buf != '*') {
     return 0; // 必须以 RESP 数组 * 开头
   }
 
   char *p = buf;
+  char *end = buf + bufLen;  // 边界指针
+
   // 1. 解析数组长度 *N\r\n
   p++;
+  if (p >= end) return 0;
   int argCnt = parseInt(&p);
   if (argCnt <= 0)
     return 0;
+  if (p + 2 > end) return 0;  // 需要至少 \r\n
   skipCrlf(&p);
 
   // 2. 循环解析所有参数（$len\r\nvalue\r\n）
   for (int i = 0; i < argCnt; i++) {
-    if (*p != '$')
+    if (p >= end || *p != '$')
       return 0; // 必须是批量字符串
     p++;
+    if (p >= end) return 0;
     // 解析字符串长度
     int strLen = parseInt(&p);
     if (strLen < 0)
       return 0;
+    if (p + 2 > end) return 0;  // 需要至少 \r\n
     skipCrlf(&p);
     // 跳过字符串内容
+    if (p + strLen > end) return 0;  // 数据不完整
     p += strLen;
+    if (p + 2 > end) return 0;  // 需要至少 \r\n
     skipCrlf(&p);
   }
 

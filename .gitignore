@@ -3,6 +3,8 @@ master
 slave
 kv_client
 test/benchmark
+test/benchmark_pipeline
+test/benchmark_save_impact
 kvstore
 debug
 
@@ -40,3 +42,6 @@ core.*
 
 # Dirac 索引
 .dirac-symbol-index
+
+*.dat
+*vs*

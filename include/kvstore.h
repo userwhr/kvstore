@@ -77,6 +77,7 @@ enum {
   SYNC,
   ECHO,
   FLUSHALL,
+  DBCOUNT,
   KVS_CMD_MAX,
 };
 #endif

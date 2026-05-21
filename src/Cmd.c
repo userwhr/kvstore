@@ -3,5 +3,5 @@ const char *command[] = {"set",   "get",     "del",   "mod",   "exist",
                          "rset",  "rget",    "rdel",  "rmod",  "rexist",
                          "hset",  "hget",    "hdel",  "hmod",  "hexist",
                          "skset", "skget",   "skdel", "skmod", "skexist",
-                         "save",  "COMMAND", "SYNC", "echo", "flushall"};
+                         "save",  "COMMAND", "SYNC", "echo", "flushall", "dbcount"};
 int COMMAND_COUNT = (sizeof(command) / sizeof(command[0]));

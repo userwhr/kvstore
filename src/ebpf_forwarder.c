@@ -38,14 +38,6 @@ static struct perf_buffer *g_pb = NULL;
 /* 转发计数器 */
 int g_forward_count = 0;
 
-void print_hex(const char *tag, const void *data, int len) {
-  printf("%s [len=%d]: ", tag, len);
-  const unsigned char *buf = (const unsigned char *)data;
-  for (int i = 0; i < len; i++) {
-    printf("%02x ", buf[i]);
-  }
-  printf("\n");
-}
 /*
  * 非阻塞 drain slave 的 TCP 读缓冲区
  * 返回值：0=正常, -1=slave 断连
@@ -301,9 +293,6 @@ void perf_event_handler(void *ctx, int cpu, void *data, __u32 data_size) {
     }
 
     g_forward_count++;
-    if (g_forward_count % 5000 == 0) {
-      printf("forward total: %llu\n", g_forward_count);
-    }
 
     // 清空slave接收缓冲区，防止窗口满
     if (drain_slave_recv() < 0) {

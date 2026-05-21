@@ -19,7 +19,7 @@ int checkLastTwoCharsIsCRLF(char *str);
 int removeLastTwoChars(char *str);
 int parseRespKv(char *resp, char **outCmd, char **params, int *paramCnt,
                 StoreType *type);
-int getOneRespLen(char *buf);
+int getOneRespLen(char *buf, int bufLen);
 void tokenPoolInit(void);
 void tokenPoolFreeAll(char *cmd, char **params, int paramCnt);
 #endif
