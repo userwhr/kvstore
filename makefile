@@ -2,12 +2,11 @@ CC = gcc
 CLANG = clang
 TARGET = kvstore
 LINK =$(BUILD)array.o $(BUILD)reactor.o $(BUILD)rbtree.o \
-	$(BUILD)nty_server.o $(BUILD)hash.o $(BUILD)skiplist.o \
+	$(BUILD)hash.o $(BUILD)skiplist.o \
 	$(BUILD)kvstore.o $(BUILD)kvs_persist.o $(BUILD)Cmd.o\
 	$(BUILD)kvs_mempool.o $(BUILD)resp.o $(BUILD)io_uringTodesk.o \
 	$(BUILD)traversal.o $(BUILD)config.o $(BUILD)rdma_replication.o \
 	$(BUILD)master_service.o $(BUILD)slave_service.o $(BUILD)ebpf_forwarder.o
-NTYCO_COMPLIE = -I ./core/ -L ./core/ -lntyco -lpthread
 RDMA_LIBS = -libverbs -lrdmacm
 Jemalloc = -ljemalloc
 Include_path = ./include/
@@ -19,23 +18,23 @@ BPF_HEADERS = -I/usr/include/x86_64-linux-gnu
 EBPF_LIBS = -lbpf -lelf -lz
 
 kvstore:compile ebpf
-	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS) $(Jemalloc) -o master
-debug:compile
-	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS) $(Jemalloc) -o debug
+	$(CC) main.c $(LINK) -I ./include/ -luring $(RDMA_LIBS) $(EBPF_LIBS) $(Jemalloc) -o master
+debug:compile_debug ebpf
+	$(CC) -g main.c $(LINK) -I ./include/ -luring $(RDMA_LIBS) $(EBPF_LIBS) $(Jemalloc) -o debug
 slave:compile
-	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS) $(Jemalloc) -o slave
+	$(CC) main.c $(LINK) -I ./include/ -luring $(RDMA_LIBS) $(EBPF_LIBS) $(Jemalloc) -o slave
 nojemalloc:compile ebpf
-	$(CC) main.c $(LINK) -I ./include/ $(NTYCO_COMPLIE) -luring $(RDMA_LIBS) $(EBPF_LIBS) -o master
+	$(CC) main.c $(LINK) -I ./include/ -luring $(RDMA_LIBS) $(EBPF_LIBS) -o master
 test:
 	gcc -O2 hiredis_test.c -o kv_client -lhiredis -lpthread
 bench:
 	gcc -O2 test/benchmark.c -o test/benchmark
 
 # ===================== eBPF 增量同步 =====================
-ebpf: $(EBPF_BUILD)XDP.bpf.o
+ebpf: $(EBPF_BUILD)ebpf_inc_sync.o
 	@echo "eBPF BPF程序编译完成！"
 
-$(EBPF_BUILD)XDP.bpf.o: $(SRC)XDP.bpf.c
+$(EBPF_BUILD)ebpf_inc_sync.o: $(SRC)XDP.bpf.c
 	@mkdir -p $(EBPF_BUILD)
 	$(CLANG) $(BPF_CFLAGS) $(BPF_HEADERS) -c $< -o $@
 
@@ -51,7 +50,6 @@ compile:
 	gcc -O2 -c $(SRC)kvs_persist.c -o $(BUILD)kvs_persist.o -I $(Include_path) && \
 	gcc -O2 -c $(SRC)kvs_mempool.c -o $(BUILD)kvs_mempool.o -I $(Include_path) && \
 	gcc -O2 -c $(SRC)resp.c -o $(BUILD)resp.o -I $(Include_path) && \
-	gcc -O2 -c $(SRC)nty_server.c -I ./core/ -o $(BUILD)nty_server.o && \
 	gcc -O2 -c $(SRC)Cmd.c -o $(BUILD)Cmd.o && \
 	gcc -O2 -c $(SRC)io_uringTodesk.c -o $(BUILD)io_uringTodesk.o -I $(Include_path) && \
 	gcc -O2 -c $(SRC)traversal.c -o $(BUILD)traversal.o -I $(Include_path) && \
@@ -60,3 +58,22 @@ compile:
 	gcc -O2 -c $(SRC)master_service.c -o $(BUILD)master_service.o -I $(Include_path) && \
 	gcc -O2 -c $(SRC)slave_service.c -o $(BUILD)slave_service.o -I $(Include_path) && \
 	gcc -O2 -c $(SRC)ebpf_forwarder.c -o $(BUILD)ebpf_forwarder.o -I $(Include_path)
+
+compile_debug:
+	gcc -O2 -g -c $(SRC)array.c -o $(BUILD)array.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)reactor.c -o $(BUILD)reactor.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)rbtree.c -o $(BUILD)rbtree.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)hash.c -o $(BUILD)hash.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)skiplist.c -o $(BUILD)skiplist.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)kvstore.c -o $(BUILD)kvstore.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)kvs_persist.c -o $(BUILD)kvs_persist.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)kvs_mempool.c -o $(BUILD)kvs_mempool.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)resp.c -o $(BUILD)resp.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)Cmd.c -o $(BUILD)Cmd.o && \
+	gcc -O2 -g -c $(SRC)io_uringTodesk.c -o $(BUILD)io_uringTodesk.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)traversal.c -o $(BUILD)traversal.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)config.c -o $(BUILD)config.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)rdma_replication.c -o $(BUILD)rdma_replication.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)master_service.c -o $(BUILD)master_service.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)slave_service.c -o $(BUILD)slave_service.o -I $(Include_path) && \
+	gcc -O2 -g -c $(SRC)ebpf_forwarder.c -o $(BUILD)ebpf_forwarder.o -I $(Include_path)

@@ -11,6 +11,7 @@
  * ============================================================================
  */
 #include "ebpf_forwarder.h"
+#include "config.h"
 #include "kvstore.h"
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
@@ -421,6 +422,19 @@ int ebpf_load_xdp(const char *ifname) {
     return -1;
   }
   // printf("[Forwarder] Perf buffer created\n");
+
+  /* 将端口配置写入 config_map */
+  struct bpf_map *config_map = bpf_object__find_map_by_name(obj, "config_map");
+  if (config_map) {
+    int config_fd = bpf_map__fd(config_map);
+    __u32 key = 0;
+    __u32 port = g_config.port;
+    if (bpf_map_update_elem(config_fd, &key, &port, BPF_ANY) != 0) {
+      fprintf(stderr, "[Forwarder] Warning: Failed to set port in config_map\n");
+    } else {
+      // printf("[Forwarder] XDP configured to monitor port %d\n", port);
+    }
+  }
 
   /* 将 XDP 程序附加到网卡 */
   int prog_fd = bpf_program__fd(prog);

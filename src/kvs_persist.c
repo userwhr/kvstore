@@ -254,46 +254,36 @@ int AOF_commands_from_mmap(file_content_t *fc) {
   // ====================== 完全复用你的原解析+执行循环逻辑
   // ======================
   while (processed < total_size) {
-    char *curr_data = mmap_data + processed; // 当前未处理的指令起始位置
+    char *curr_data = mmap_data + processed;
     int remaining = total_size - processed;
-    int oneRespLen = getOneRespLen(curr_data, remaining);
 
-    // 无效指令/解析失败，退出
-    if (oneRespLen <= 0 || (processed + oneRespLen) > total_size) {
-      fprintf(stderr, "❌ 指令解析失败，跳过剩余数据\n");
-      break;
-    }
-
-    // -------------- 复用：指令解析 --------------
     char *cmd = NULL;
     char *params[10] = {0};
     int paramCnt = 0;
     StoreType type;
-    int parseRet = parseRespKv(curr_data, &cmd, &params[0], &paramCnt, &type);
 
-    if (parseRet == -1)
+    int consumed = parseRespKvOnePass(curr_data, remaining,
+                                      &cmd, &params[0], &paramCnt, &type);
+
+    if (consumed == 0)
       break;
-    if (parseRet < 0) {
+    if (consumed < 0) {
       fprintf(stderr, "❌ 指令格式错误，终止执行\n");
       return -1;
     }
 
-    // -------------- 复用：构造参数数组 --------------
     char *tokens[20] = {0};
     tokens[0] = cmd;
     for (int i = 0; i < paramCnt; i++)
       tokens[i + 1] = params[i];
 
-    // 核心执行
     mmapProtocal(tokens);
 
-    // -------------- 复用：释放解析内存 --------------
     free(cmd);
     for (int i = 0; i < paramCnt; i++)
       free(params[i]);
 
-    // -------------- 游标前移：消耗已处理指令 --------------
-    processed += oneRespLen;
+    processed += consumed;
   }
   return 0;
 }

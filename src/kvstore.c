@@ -65,8 +65,8 @@ static void *sync_thread_func(void *arg) {
     // printf("[SYNC] Sending %zu bytes via RDMA on port %d...\n",
     //        sync_size, g_config.slave_rdma_port);
 
-    int rdma_ret = rdma_master_send_mem(sync_data, sync_size,
-                                        g_config.slave_rdma_port);
+    int rdma_ret =
+        rdma_master_send_mem(sync_data, sync_size, g_config.slave_rdma_port);
     free((void *)sync_data);
     if (rdma_ret != 0) {
       fprintf(stderr, "[SYNC] RDMA data transfer failed\n");
@@ -78,7 +78,7 @@ static void *sync_thread_func(void *arg) {
     fprintf(stderr, "[SYNC] No data to send via RDMA\n");
     g_syncing = 0;
     return NULL;
-  } 
+  }
 
   // 2. RDMA 传输完成，加载 XDP 程序到网卡
   // printf("[SYNC] RDMA complete, loading XDP program...\n");
@@ -762,8 +762,8 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     int skiplist_cnt = global_skiplist ? global_skiplist->count : 0;
     int total = array_cnt + rbtree_cnt + hash_cnt + skiplist_cnt;
     char info[256];
-    int info_len = snprintf(info, sizeof(info),
-        "array:%d rbtree:%d hash:%d skiplist:%d total:%d",
+    int info_len = snprintf(
+        info, sizeof(info), "array:%d rbtree:%d hash:%d skiplist:%d total:%d",
         array_cnt, rbtree_cnt, hash_cnt, skiplist_cnt, total);
     length = sprintf(response, "$%d\r\n%s\r\n", info_len, info);
     break;

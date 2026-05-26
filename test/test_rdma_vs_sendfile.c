@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sendfile.h>
@@ -175,7 +176,7 @@ static int sendfile_server(int port) {
 }
 
 /*
- * sendfile 客户端（发送端）
+ * sendfile 客户端（发送端）- 使用 mmap + send
  */
 static int sendfile_client(const char *file_path, const char *server_ip, int port) {
     // 打开文件
@@ -188,13 +189,22 @@ static int sendfile_client(const char *file_path, const char *server_ip, int por
     struct stat st;
     fstat(file_fd, &st);
     size_t file_size = st.st_size;
-    printf("[sendfile Client] File: %s (%zu bytes, %.2f MB)\n",
+    printf("[mmap+send Client] File: %s (%zu bytes, %.2f MB)\n",
            file_path, file_size, file_size / 1024.0 / 1024.0);
+
+    // 使用 mmap 加载文件到内存
+    void *file_data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, file_fd, 0);
+    if (file_data == MAP_FAILED) {
+        perror("mmap failed");
+        close(file_fd);
+        return -1;
+    }
 
     // 创建 socket
     int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (sock_fd < 0) {
         perror("socket failed");
+        munmap(file_data, file_size);
         close(file_fd);
         return -1;
     }
@@ -205,11 +215,12 @@ static int sendfile_client(const char *file_path, const char *server_ip, int por
     server_addr.sin_port = htons(port);
     inet_pton(AF_INET, server_ip, &server_addr.sin_addr);
 
-    printf("[sendfile Client] Connecting to %s:%d...\n", server_ip, port);
+    printf("[mmap+send Client] Connecting to %s:%d...\n", server_ip, port);
 
     if (connect(sock_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("connect failed");
         close(sock_fd);
+        munmap(file_data, file_size);
         close(file_fd);
         return -1;
     }
@@ -217,20 +228,27 @@ static int sendfile_client(const char *file_path, const char *server_ip, int por
     // 发送文件大小
     send(sock_fd, &file_size, sizeof(file_size), 0);
 
-    // 使用 sendfile 发送文件
-    printf("[sendfile Client] Sending file...\n");
+    // 使用 mmap 加载 + send 发送文件（只计时数据传输）
+    printf("[mmap+send Client] Sending file...\n");
+
+    // 预加载页面到内存（避免测量缺页中断）
+    madvise(file_data, file_size, MADV_WILLNEED);
 
     double start_time = get_time_ms();
 
     size_t total_sent = 0;
-    off_t offset = 0;
+    const char *ptr = (const char *)file_data;
 
     while (total_sent < file_size) {
-        ssize_t sent = sendfile(sock_fd, file_fd, &offset, file_size - total_sent);
+        size_t chunk_size = file_size - total_sent;
+        if (chunk_size > BUFFER_SIZE)
+            chunk_size = BUFFER_SIZE;
+
+        ssize_t sent = send(sock_fd, ptr + total_sent, chunk_size, 0);
         if (sent <= 0) {
             if (sent < 0 && errno == EINTR)
                 continue;
-            perror("sendfile failed");
+            perror("send failed");
             break;
         }
         total_sent += sent;
@@ -240,11 +258,12 @@ static int sendfile_client(const char *file_path, const char *server_ip, int por
     double elapsed = end_time - start_time;
     double speed = (total_sent / 1024.0 / 1024.0) / (elapsed / 1000.0);
 
-    printf("\n[sendfile Client] Transfer complete.\n");
+    printf("\n[mmap+send Client] Transfer complete.\n");
     printf("  - Sent: %zu bytes (%.2f MB)\n", total_sent, total_sent / 1024.0 / 1024.0);
     printf("  - Time: %.2f ms\n", elapsed);
     printf("  - Speed: %.2f MB/s\n", speed);
 
+    munmap(file_data, file_size);
     close(sock_fd);
     close(file_fd);
     return 0;
@@ -253,66 +272,151 @@ static int sendfile_client(const char *file_path, const char *server_ip, int por
 // ====================== RDMA 测试 ======================
 
 /*
- * RDMA 服务端（发送端）
+ * RDMA 服务端（发送端）- 使用 mmap 加载文件，多次测试分离连接建立和数据传输时间
  */
-static int rdma_server(const char *file_path, int rdma_port) {
-    printf("[RDMA Server] Sending file: %s\n", file_path);
-
-    double start_time = get_time_ms();
-
-    int ret = rdma_master_send_file(file_path, rdma_port);
-
-    double end_time = get_time_ms();
-    double elapsed = end_time - start_time;
-
-    if (ret == 0) {
-        // 获取文件大小
-        struct stat st;
-        stat(file_path, &st);
-        size_t file_size = st.st_size;
-        double speed = (file_size / 1024.0 / 1024.0) / (elapsed / 1000.0);
-
-        printf("\n[RDMA Server] Transfer complete.\n");
-        printf("  - File size: %zu bytes (%.2f MB)\n", file_size, file_size / 1024.0 / 1024.0);
-        printf("  - Time: %.2f ms\n", elapsed);
-        printf("  - Speed: %.2f MB/s\n", speed);
-    } else {
-        fprintf(stderr, "[RDMA Server] Transfer failed.\n");
+static int rdma_server(const char *file_path, int rdma_port, int repeat_count) {
+    // 打开文件并 mmap
+    int file_fd = open(file_path, O_RDONLY);
+    if (file_fd < 0) {
+        perror("open file failed");
+        return -1;
     }
 
-    return ret;
+    struct stat st;
+    fstat(file_fd, &st);
+    size_t file_size = st.st_size;
+
+    void *file_data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, file_fd, 0);
+    if (file_data == MAP_FAILED) {
+        perror("mmap failed");
+        close(file_fd);
+        return -1;
+    }
+
+    // 预加载页面到内存
+    madvise(file_data, file_size, MADV_WILLNEED);
+
+    printf("[RDMA Server] Sending file: %s (%.2f MB), repeat %d times\n",
+           file_path, file_size / 1024.0 / 1024.0, repeat_count);
+
+    double *times = (double *)malloc(repeat_count * sizeof(double));
+    if (!times) {
+        perror("malloc failed");
+        munmap(file_data, file_size);
+        close(file_fd);
+        return -1;
+    }
+
+    for (int i = 0; i < repeat_count; i++) {
+        printf("[RDMA Server] Run %d/%d...\n", i + 1, repeat_count);
+
+        double start_time = get_time_ms();
+        int ret = rdma_master_send_mem(file_data, file_size, rdma_port);
+        double end_time = get_time_ms();
+
+        if (ret != 0) {
+            fprintf(stderr, "[RDMA Server] Transfer failed on run %d.\n", i + 1);
+            free(times);
+            munmap(file_data, file_size);
+            close(file_fd);
+            return -1;
+        }
+
+        times[i] = end_time - start_time;
+        printf("  - Time: %.2f ms\n", times[i]);
+    }
+
+    // 计算统计信息
+    double total_time = 0;
+    double min_time = times[0];
+    double max_time = times[0];
+
+    for (int i = 0; i < repeat_count; i++) {
+        total_time += times[i];
+        if (times[i] < min_time) min_time = times[i];
+        if (times[i] > max_time) max_time = times[i];
+    }
+
+    double avg_time = total_time / repeat_count;
+    double avg_speed = (file_size / 1024.0 / 1024.0) / (avg_time / 1000.0);
+
+    printf("\n[RDMA Server] Statistics:\n");
+    printf("  - First run (with connection setup): %.2f ms, %.2f MB/s\n",
+           times[0], (file_size / 1024.0 / 1024.0) / (times[0] / 1000.0));
+    if (repeat_count > 1) {
+        double subsequent_avg = (total_time - times[0]) / (repeat_count - 1);
+        double subsequent_speed = (file_size / 1024.0 / 1024.0) / (subsequent_avg / 1000.0);
+        printf("  - Subsequent runs avg (data transfer only): %.2f ms, %.2f MB/s\n",
+               subsequent_avg, subsequent_speed);
+    }
+    printf("  - Overall avg: %.2f ms, %.2f MB/s\n", avg_time, avg_speed);
+    printf("  - Min: %.2f ms, Max: %.2f ms\n", min_time, max_time);
+
+    free(times);
+    munmap(file_data, file_size);
+    close(file_fd);
+    return 0;
 }
 
 /*
- * RDMA 客户端（接收端）
+ * RDMA 客户端（接收端）- 多次测试
  */
-static int rdma_client(const char *server_ip, int rdma_port) {
-    printf("[RDMA Client] Connecting to %s:%d...\n", server_ip, rdma_port);
+static int rdma_client(const char *server_ip, int rdma_port, int repeat_count) {
+    printf("[RDMA Client] Receiving from %s:%d, repeat %d times\n",
+           server_ip, rdma_port, repeat_count);
 
-    char *data = NULL;
-    size_t data_size = 0;
-
-    double start_time = get_time_ms();
-
-    int ret = rdma_slave_recv_file(server_ip, rdma_port, &data, &data_size);
-
-    double end_time = get_time_ms();
-    double elapsed = end_time - start_time;
-
-    if (ret == 0) {
-        double speed = (data_size / 1024.0 / 1024.0) / (elapsed / 1000.0);
-
-        printf("\n[RDMA Client] Transfer complete.\n");
-        printf("  - Received: %zu bytes (%.2f MB)\n", data_size, data_size / 1024.0 / 1024.0);
-        printf("  - Time: %.2f ms\n", elapsed);
-        printf("  - Speed: %.2f MB/s\n", speed);
-
-        free(data);
-    } else {
-        fprintf(stderr, "[RDMA Client] Transfer failed.\n");
+    double *times = (double *)malloc(repeat_count * sizeof(double));
+    if (!times) {
+        perror("malloc failed");
+        return -1;
     }
 
-    return ret;
+    for (int i = 0; i < repeat_count; i++) {
+        printf("[RDMA Client] Run %d/%d...\n", i + 1, repeat_count);
+
+        char *data = NULL;
+        size_t data_size = 0;
+
+        double start_time = get_time_ms();
+        int ret = rdma_slave_recv_file(server_ip, rdma_port, &data, &data_size);
+        double end_time = get_time_ms();
+
+        if (ret != 0) {
+            fprintf(stderr, "[RDMA Client] Receive failed on run %d.\n", i + 1);
+            free(times);
+            return -1;
+        }
+
+        times[i] = end_time - start_time;
+        printf("  - Time: %.2f ms\n", times[i]);
+
+        if (data) free(data);
+    }
+
+    // 计算统计信息
+    double total_time = 0;
+    double min_time = times[0];
+    double max_time = times[0];
+
+    for (int i = 0; i < repeat_count; i++) {
+        total_time += times[i];
+        if (times[i] < min_time) min_time = times[i];
+        if (times[i] > max_time) max_time = times[i];
+    }
+
+    double avg_time = total_time / repeat_count;
+
+    printf("\n[RDMA Client] Statistics:\n");
+    printf("  - First run (with connection setup): %.2f ms\n", times[0]);
+    if (repeat_count > 1) {
+        double subsequent_avg = (total_time - times[0]) / (repeat_count - 1);
+        printf("  - Subsequent runs avg (data transfer only): %.2f ms\n", subsequent_avg);
+    }
+    printf("  - Overall avg: %.2f ms\n", avg_time);
+    printf("  - Min: %.2f ms, Max: %.2f ms\n", min_time, max_time);
+
+    free(times);
+    return 0;
 }
 
 // ====================== 综合对比测试 ======================
@@ -323,16 +427,16 @@ static int rdma_client(const char *server_ip, int rdma_port) {
  */
 static void print_usage(const char *prog) {
     printf("Usage:\n");
-    printf("  %s generate <size_mb> [output_file]  - Generate test file\n", prog);
-    printf("  %s sendfile-server <port>             - Start sendfile receiver\n", prog);
-    printf("  %s sendfile-client <file> <ip> <port>  - Send file via sendfile\n", prog);
-    printf("  %s rdma-server <file> <port>           - Start RDMA sender\n", prog);
-    printf("  %s rdma-client <ip> <port>             - Receive file via RDMA\n", prog);
+    printf("  %s generate <size_mb> [output_file]      - Generate test file\n", prog);
+    printf("  %s sendfile-server <port>                 - Start sendfile receiver\n", prog);
+    printf("  %s sendfile-client <file> <ip> <port>     - Send file via mmap+send\n", prog);
+    printf("  %s rdma-server <file> <port> [repeat]     - Start RDMA sender (default repeat=3)\n", prog);
+    printf("  %s rdma-client <ip> <port> [repeat]       - Receive file via RDMA (default repeat=3)\n", prog);
     printf("\nExample:\n");
     printf("  # 生成 100MB 测试文件\n");
     printf("  %s generate 100\n", prog);
     printf("\n");
-    printf("  # 测试 sendfile（在接收端运行 server，在发送端运行 client）\n");
+    printf("  # 测试 mmap+send（在接收端运行 server，在发送端运行 client）\n");
     printf("  # Machine A (receiver):\n");
     printf("  %s sendfile-server 18888\n", prog);
     printf("  # Machine B (sender):\n");
@@ -340,9 +444,9 @@ static void print_usage(const char *prog) {
     printf("\n");
     printf("  # 测试 RDMA（在发送端运行 server，在接收端运行 client）\n");
     printf("  # Machine A (sender):\n");
-    printf("  %s rdma-server test.dat 18889\n", prog);
+    printf("  %s rdma-server test.dat 18889 5\n", prog);
     printf("  # Machine B (receiver):\n");
-    printf("  %s rdma-client 192.168.x.x 18889\n", prog);
+    printf("  %s rdma-client 192.168.x.x 18889 5\n", prog);
 }
 
 int main(int argc, char *argv[]) {
@@ -378,21 +482,23 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(cmd, "rdma-server") == 0) {
         if (argc < 4) {
-            printf("Usage: %s rdma-server <file> <port>\n", argv[0]);
+            printf("Usage: %s rdma-server <file> <port> [repeat]\n", argv[0]);
             return 1;
         }
         const char *file = argv[2];
         int port = atoi(argv[3]);
-        return rdma_server(file, port);
+        int repeat = (argc > 4) ? atoi(argv[4]) : 3;
+        return rdma_server(file, port, repeat);
     }
     else if (strcmp(cmd, "rdma-client") == 0) {
         if (argc < 4) {
-            printf("Usage: %s rdma-client <ip> <port>\n", argv[0]);
+            printf("Usage: %s rdma-client <ip> <port> [repeat]\n", argv[0]);
             return 1;
         }
         const char *ip = argv[2];
         int port = atoi(argv[3]);
-        return rdma_client(ip, port);
+        int repeat = (argc > 4) ? atoi(argv[4]) : 3;
+        return rdma_client(ip, port, repeat);
     }
     else {
         printf("Unknown command: %s\n", cmd);

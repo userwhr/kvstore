@@ -20,6 +20,7 @@
 #include "kvstore.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/time.h>
 
 /* 全局变量声明（在 main.c 中定义） */
 extern file_content_t *kvs_log;
@@ -33,8 +34,15 @@ int start_master(void) {
     kvs_log = (file_content_t *)malloc(sizeof(file_content_t));
     fcInit(g_config.log_path, kvs_log);
     map_file_to_struct(kvs_log);
+
+    struct timeval rdb_start, rdb_end;
+    gettimeofday(&rdb_start, NULL);
     int ret = snapshot_restore_from_mmap(kvs_log);
-    printf("[Master] DB loaded from disk (full persist)\n");
+    gettimeofday(&rdb_end, NULL);
+
+    double rdb_time_ms = (rdb_end.tv_sec - rdb_start.tv_sec) * 1000.0 +
+                         (rdb_end.tv_usec - rdb_start.tv_usec) / 1000.0;
+    printf("[Master] DB loaded from disk (full persist), RDB load time: %.2f ms\n", rdb_time_ms);
   }
   if (g_config.enable_incremental_persist == 1) {
     Icr_log = (file_content_t *)malloc(sizeof(file_content_t));

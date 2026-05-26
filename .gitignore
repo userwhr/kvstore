@@ -45,3 +45,7 @@ core.*
 
 *.dat
 *vs*
+*data*
+*svg
+out*
+Flame*

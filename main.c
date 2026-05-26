@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 file_content_t *kvs_log = NULL;
@@ -56,6 +57,8 @@ static void signal_handler(int sig) {
 }
 
 int main(int argc, char *argv[]) {
+  printf("[Main] PID: %d\n", getpid());
+
   if (load_config("./kvstore.conf") != 0) {
     exit(EXIT_FAILURE);
   }

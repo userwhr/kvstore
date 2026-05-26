@@ -89,88 +89,52 @@ int matchCommand(const char *cmd, StoreType *type) {
   return -1; // 命令不存在
 }
 
-// 修复后的解析函数：只读rbuffer，不修改！复制数据+加\0，msg完全正常
-int parseRespKv(char *resp, char **outCmd, char **params, int *paramCnt,
-                StoreType *type) {
-  char *p = resp;
+// ====================== 单次解析：同时提取 token 并返回消耗字节数
+// 返回值：>0 消耗字节数，0 数据不完整，-1 协议错误，-2 命令不存在
+int parseRespKvOnePass(const char *buf, int bufLen, char **outCmd,
+                       char **params, int *paramCnt, StoreType *type) {
+  const char *p = buf;
+  const char *end = buf + bufLen;
   *paramCnt = 0;
 
-  if (*p != '*')
+  if (p >= end || *p != '*')
     return -1;
   p++;
-  int totalArgs = parseInt(&p);
-  skipCrlf(&p);
+  if (p >= end) return 0;
+  int totalArgs = parseInt((char **)&p);
+  if (totalArgs <= 0)
+    return -1;
+  /* 跳过 \r\n */
+  if (p + 2 > end) return 0;
+  skipCrlf((char **)&p);
 
   for (int i = 0; i < totalArgs; i++) {
-    if (*p != '$')
-      return -2;
+    if (p >= end || *p != '$')
+      return -1;
     p++;
-    int len = parseInt(&p);
-    skipCrlf(&p);
-
-    char *buf = tokenPoolAlloc(len);
-    if (buf == NULL)
-      buf = malloc(len + 1);   /* 超大 token 回退到 malloc */
-    memcpy(buf, p, len);
-    buf[len] = '\0';
-
-    if (i == 0) {
-      *outCmd = buf; // 命令：带\0的副本
-    } else {
-      params[*paramCnt] = buf; // 参数：带\0的副本
-      (*paramCnt)++;
-    }
-
+    if (p >= end) return 0;
+    int len = parseInt((char **)&p);
+    if (len < 0) return -1;
+    if (p + 2 > end) return 0;
+    skipCrlf((char **)&p);
+    if (p + len > end) return 0;  /* 数据不完整 */
+    /* 分配 token 并拷贝 */
+    char *tbuf = tokenPoolAlloc(len);
+    if (tbuf == NULL)
+      tbuf = malloc(len + 1);
+    memcpy(tbuf, p, len);
+    tbuf[len] = '\0';
+    if (i == 0)
+      *outCmd = tbuf;
+    else
+      params[(*paramCnt)++] = tbuf;
     p += len;
-    skipCrlf(&p);
+    if (p + 2 > end) return 0;
+    skipCrlf((char **)&p);
   }
 
   int cmdIdx = matchCommand(*outCmd, type);
   if (cmdIdx == -1)
-    return -3;
-
-  return cmdIdx;
-}
-// ====================== 核心：计算单条RESP命令的总长度（解决粘包切割）
-// ======================
-// 功能：解析一段缓冲区，返回【第一条完整RESP命令】占用的总字节数
-// 返回值：>0 表示有效长度，=0 表示数据不完整/协议非法
-int getOneRespLen(char *buf, int bufLen) {
-  if (buf == NULL || bufLen <= 0 || *buf != '*') {
-    return 0; // 必须以 RESP 数组 * 开头
-  }
-
-  char *p = buf;
-  char *end = buf + bufLen;  // 边界指针
-
-  // 1. 解析数组长度 *N\r\n
-  p++;
-  if (p >= end) return 0;
-  int argCnt = parseInt(&p);
-  if (argCnt <= 0)
-    return 0;
-  if (p + 2 > end) return 0;  // 需要至少 \r\n
-  skipCrlf(&p);
-
-  // 2. 循环解析所有参数（$len\r\nvalue\r\n）
-  for (int i = 0; i < argCnt; i++) {
-    if (p >= end || *p != '$')
-      return 0; // 必须是批量字符串
-    p++;
-    if (p >= end) return 0;
-    // 解析字符串长度
-    int strLen = parseInt(&p);
-    if (strLen < 0)
-      return 0;
-    if (p + 2 > end) return 0;  // 需要至少 \r\n
-    skipCrlf(&p);
-    // 跳过字符串内容
-    if (p + strLen > end) return 0;  // 数据不完整
-    p += strLen;
-    if (p + 2 > end) return 0;  // 需要至少 \r\n
-    skipCrlf(&p);
-  }
-
-  // 3. 返回总长度（指针最终位置 - 起始位置 = 本条RESP总字节数）
+    return -2;
   return p - buf;
 }

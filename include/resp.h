@@ -17,9 +17,8 @@ char *add_length_prefix(char *src);
 int parse_head(const char *str, uint32_t *out_len);
 int checkLastTwoCharsIsCRLF(char *str);
 int removeLastTwoChars(char *str);
-int parseRespKv(char *resp, char **outCmd, char **params, int *paramCnt,
-                StoreType *type);
-int getOneRespLen(char *buf, int bufLen);
+int parseRespKvOnePass(const char *buf, int bufLen, char **outCmd,
+                       char **params, int *paramCnt, StoreType *type);
 void tokenPoolInit(void);
 void tokenPoolFreeAll(char *cmd, char **params, int paramCnt);
 #endif

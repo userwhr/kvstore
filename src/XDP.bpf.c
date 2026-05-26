@@ -9,8 +9,6 @@
 #include <linux/tcp.h>
 
 
-#define MASTER_PORT 2000
-
 // 手动定义TCP标志位，确保eBPF可用
 #define TH_FIN 0x01
 #define TH_SYN 0x02
@@ -19,6 +17,13 @@
 #define TH_ACK 0x10
 
 /* ===================== eBPF Maps ===================== */
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u32);
+} config_map SEC(".maps");
+
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
   __uint(max_entries, 1);
@@ -84,7 +89,11 @@ int ebpf_inc_sync_func(struct xdp_md *ctx) {
     return XDP_PASS;
 
   __u16 dst_port = bpf_ntohs(tcp->dest);
-  if (dst_port != MASTER_PORT)
+
+  /* 从 config_map 读取监听端口 */
+  __u32 cfg_key = 0;
+  __u32 *master_port = bpf_map_lookup_elem(&config_map, &cfg_key);
+  if (!master_port || dst_port != *master_port)
     return XDP_PASS;
 
   int tcp_hdr_len = tcp->doff * 4;
