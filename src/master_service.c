@@ -27,7 +27,6 @@ extern file_content_t *kvs_log;
 extern file_content_t *Icr_log;
 
 int start_master(void) {
-  printf("[Master] Starting as master\n");
 
   /* ========== 第1步：从磁盘加载数据 ========== */
   if (g_config.enable_full_persist == 1) {

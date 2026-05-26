@@ -72,23 +72,8 @@ int main(int argc, char *argv[]) {
   uringInit();
 
   if (g_config.enable_slave) {
-    // ====================== Slave 模式 ======================
-    printf("========================================\n");
-    printf("  KVStore Slave Mode\n");
-    printf("  Master: %s:%d\n", g_config.slave_of_ip, g_config.slave_of_port);
-    printf("  RDMA Port: %d\n", g_config.slave_rdma_port);
-    printf("  Service Port: %d\n", g_config.port);
-    printf("========================================\n");
-
     start_slave();
   } else {
-    // ====================== Master 模式 ======================
-    printf("========================================\n");
-    printf("  KVStore Master Mode\n");
-    printf("  Port: %d\n", g_config.port);
-    printf("  RDMA Sync Port: %d\n", g_config.slave_rdma_port);
-    printf("========================================\n");
-
     start_master();
   }
 

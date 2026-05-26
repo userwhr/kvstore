@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 extern file_content_t *kvs_log; // 日志文件mmap以及信息存储的结构体
@@ -204,7 +205,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
   // 匹配命令
   int cmd = KVS_CMD_START;
   for (cmd = KVS_CMD_START; cmd < KVS_CMD_MAX; cmd++) {
-    if (strcmp(tokens[0], command[cmd]) == 0) {
+    if (strcasecmp(tokens[0], command[cmd]) == 0) {
       break;
     }
   }

@@ -15,12 +15,11 @@
 #include <sys/uio.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #define CONNECTION_SIZE 1024
 #define MAX_PORTS 1
-#define TIME_SUB_MS(tv1, tv2)                                                  \
-  ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 char global_rbuff[1024 * 1024];
 static kvs_handler handler;
 extern file_content_t *kvs_log;
@@ -33,9 +32,9 @@ int epfd = 0;
 int g_listen_fd = -1; /* Reactor 的 listen fd，暴露给外部使用 */
 int g_slave_fd =
     -1; /* Slave 节点的 client fd，用于 eBPF forwarder 转发写命令 */
-struct timeval begin;
 
 struct conn conn_list[CONNECTION_SIZE] = {0};
+
 // fd
 int set_event(int fd, int event, int flag) {
 
@@ -90,17 +89,6 @@ int accept_cb(int fd) {
 
   event_register(clientfd, EPOLLIN); // | EPOLLET
 
-  if ((clientfd % 1000) == 0) {
-
-    struct timeval current;
-    gettimeofday(&current, NULL);
-
-    int time_used = TIME_SUB_MS(current, begin);
-    memcpy(&begin, &current, sizeof(struct timeval));
-
-    printf("accept finshed: %d, time_used: %d\n", clientfd, time_used);
-  }
-
   return 0;
 }
 
@@ -113,13 +101,53 @@ static int str_len_raw(char *s) {
 }
 
 int recv_cb(int fd) {
-  // printf("进入recv_cb\n");
   conn_t *conn = &conn_list[fd];
   int ret;
 
-  ret =
-      recv(fd, conn->rbuffer + conn->rlength, BUFFER_LENGTH - conn->rlength, 0);
+  /* 懒分配：首次 recv 时分配 4KB */
+  if (conn->rbuffer == NULL) {
+    conn->rbuffer = malloc(RBUF_INIT_CAP);
+    if (conn->rbuffer == NULL) {
+      close(fd);
+      epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+      return 0;
+    }
+    conn->rbuf_cap = RBUF_INIT_CAP;
+    conn->rpos = 0;
+    conn->rlength = 0;
+  }
+
+  /* compact：读指针过半时把未消费数据移到开头 */
+  if (conn->rpos > 0 && conn->rpos > conn->rbuf_cap / 2) {
+    int remain = conn->rlength - conn->rpos;
+    if (remain > 0)
+      memmove(conn->rbuffer, conn->rbuffer + conn->rpos, remain);
+    conn->rlength = remain;
+    conn->rpos = 0;
+  }
+
+  /* 扩容：剩余空间不足时翻倍 */
+  int avail = conn->rbuf_cap - conn->rlength;
+  if (avail < 1024) {
+    int new_cap = conn->rbuf_cap * 2;
+    if (new_cap > RBUF_MAX_CAP) new_cap = RBUF_MAX_CAP;
+    if (new_cap > conn->rbuf_cap) {
+      char *new_buf = realloc(conn->rbuffer, new_cap);
+      if (new_buf == NULL) {
+        close(fd);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+        return 0;
+      }
+      conn->rbuffer = new_buf;
+      conn->rbuf_cap = new_cap;
+    }
+  }
+
+  ret = recv(fd, conn->rbuffer + conn->rlength,
+             conn->rbuf_cap - conn->rlength, 0);
   if (ret <= 0) {
+    free(conn->rbuffer);
+    conn->rbuffer = NULL;
     close(fd);
     epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
     return 0;
@@ -127,7 +155,7 @@ int recv_cb(int fd) {
   conn->rlength += ret;
 
   while (1) {
-    if (conn->rlength <= 0)
+    if (conn->rpos >= conn->rlength)
       break;
 
     char *cmd = NULL;
@@ -135,33 +163,42 @@ int recv_cb(int fd) {
     int paramCnt = 0;
     StoreType type;
 
-    // 调用新的parse：不修改rbuffer，cmd/params自带\0
-    int parseRet =
-        parseRespKv(conn->rbuffer, &cmd, &params[0], &paramCnt, &type);
-    if (parseRet == -1)
+    int consumed = parseRespKvOnePass(conn->rbuffer + conn->rpos,
+                                      conn->rlength - conn->rpos,
+                                      &cmd, &params[0], &paramCnt, &type);
+    if (consumed == 0)  /* 数据不完整，等待更多数据 */
       break;
-    if (parseRet < 0) {
-      close(fd);
-      epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-      return 0;
+    if (consumed == -1) { /* 协议格式错误，丢弃 */
+      tokenPoolFreeAll(cmd, params, paramCnt);
+      break;
+    }
+    /* consumed == -2: 命令不存在，cmd/params 已填充，计算消耗长度后继续 */
+    if (consumed == -2) {
+      /* 计算已解析的 RESP 消息长度: *N\r\n + 每个参数 $L\r\nV\r\n */
+      consumed = 0;
+      char *buf = conn->rbuffer + conn->rpos;
+      /* *N\r\n */
+      while (buf[consumed] != '\r') consumed++;
+      consumed += 2;
+      /* $L\r\nV\r\n for each param */
+      for (int i = 0; i < paramCnt + 1; i++) {
+        consumed++; /* $ */
+        while (buf[consumed] != '\r') consumed++;
+        consumed += 2; /* \r\n */
+        int len = i == 0 ? strlen(cmd) : strlen(params[i-1]);
+        consumed += len + 2; /* V\r\n */
+      }
     }
 
-    // ====================== 你的原有逻辑 ======================
-    // ✅ msg 正常拷贝完整的原始报文，没有任何破坏！
-    int oneRespLen = getOneRespLen(conn->rbuffer, conn->rlength);
-    if (oneRespLen <= 0)
-      break;
-    char msg[oneRespLen + 1];
-    memcpy(msg, conn->rbuffer, oneRespLen); // 原始数据完整！
-    msg[oneRespLen] = '\0';
+    /* 构造原始 RESP 消息用于 AOF */
+    char *msg = conn->rbuffer + conn->rpos;
+    int msg_len = consumed;
 
-    // 直接使用 cmd/params（自带\0，无乱码）
     char *tokens[20] = {0};
     tokens[0] = cmd;
     for (int i = 0; i < paramCnt; i++)
       tokens[i + 1] = params[i];
 
-    // 你的handler逻辑（完全不变）
     uint32_t curr_off = 0;
     if (conn->send_queue_cnt > 0) {
       int last_idx = conn->send_queue_tail - 1;
@@ -170,14 +207,14 @@ int recv_cb(int fd) {
       curr_off =
           conn->send_off_queue[last_idx] + conn->send_len_queue[last_idx];
     }
-    /* 防止 wbuffer / 发送队列溢出，停止解析等 send_cb 排空 */
     if (curr_off + 512 > BUFFER_LENGTH ||
         conn->send_queue_cnt >= MAX_SEND_QUEUE) {
+      tokenPoolFreeAll(cmd, params, paramCnt);
       break;
     }
+
     kvs_result_t kvs_ret;
     if (g_slave_fd == fd && g_config.enable_slave == 1) {
-      /* Slave 端收到 Master 转发的写命令，只执行不回复 */
       char tmp_response[1024];
       kvs_ret =
           kvs_filter_protocol(fd, tokens, msg, paramCnt + 1, tmp_response);
@@ -187,9 +224,7 @@ int recv_cb(int fd) {
     }
     int curr_len = kvs_ret.len;
 
-    /* AOF 落盘：kvs_filter_protocol 执行成功且开启增量持久化 */
     if (kvs_ret.need_aof && g_config.enable_incremental_persist == 1) {
-      size_t msg_len = strlen(msg);
       char *async_buf = (char *)malloc(msg_len + 1);
       if (async_buf) {
         memcpy(async_buf, msg, msg_len);
@@ -199,17 +234,12 @@ int recv_cb(int fd) {
       }
     }
 
-    /* 如果是 Slave 节点，保存 client fd 用于 eBPF forwarder */
     if (kvs_ret.client_type == CLIENT_TYPE_SLAVE) {
       g_slave_fd = fd;
-      // printf("[Reactor] Slave client fd=%d saved for eBPF forwarder\n", fd);
     }
 
     tokenPoolFreeAll(cmd, params, paramCnt);
 
-    /* Slave 端收到 Master 转发的命令，执行后回复（不再跳过发送队列） */
-
-    // 你的发送队列、缓冲区移动逻辑（完全不变）
     if (conn->send_queue_cnt >= MAX_SEND_QUEUE) {
       close(fd);
       epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
@@ -220,9 +250,7 @@ int recv_cb(int fd) {
     conn->send_queue_tail = (conn->send_queue_tail + 1) % MAX_SEND_QUEUE;
     conn->send_queue_cnt++;
 
-    memmove(conn->rbuffer, conn->rbuffer + oneRespLen,
-            conn->rlength - oneRespLen);
-    conn->rlength -= oneRespLen;
+    conn->rpos += consumed;
   }
 
   if (conn->send_queue_cnt > 0)
@@ -282,6 +310,7 @@ int send_cb(int fd) {
 
   return 0;
 }
+
 int init_server(unsigned short port) {
 
   int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -333,12 +362,10 @@ int react_entrence(unsigned short port, kvs_handler hd) {
     event_register(g_slave_fd, EPOLLIN);
   }
 
-  gettimeofday(&begin, NULL);
-
   while (1) { // mainloop
 
-    struct epoll_event events[1024] = {0};
-    int nready = epoll_wait(epfd, events, 1024, -1);
+    struct epoll_event events[32] = {0};
+    int nready = epoll_wait(epfd, events, 32, -1);
 
     int i = 0;
     for (i = 0; i < nready; i++) {
