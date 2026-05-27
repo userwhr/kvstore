@@ -6,7 +6,8 @@ LINK =$(BUILD)array.o $(BUILD)reactor.o $(BUILD)rbtree.o \
 	$(BUILD)kvstore.o $(BUILD)kvs_persist.o $(BUILD)Cmd.o\
 	$(BUILD)kvs_mempool.o $(BUILD)resp.o $(BUILD)io_uringTodesk.o \
 	$(BUILD)traversal.o $(BUILD)config.o $(BUILD)rdma_replication.o \
-	$(BUILD)master_service.o $(BUILD)slave_service.o $(BUILD)ebpf_forwarder.o
+	$(BUILD)master_service.o $(BUILD)slave_service.o $(BUILD)ebpf_forwarder.o \
+	$(BUILD)slave_manager.o
 RDMA_LIBS = -libverbs -lrdmacm
 Jemalloc = -ljemalloc
 Include_path = ./include/
@@ -40,6 +41,16 @@ $(EBPF_BUILD)ebpf_inc_sync.o: $(SRC)XDP.bpf.c
 
 # =========================================================
 
+# 独立的 eBPF forwarder 可执行文件（用于 fork+exec 方式）
+ebpf_forwarder_main: $(EBPF_BUILD)ebpf_forwarder_main
+
+$(EBPF_BUILD)ebpf_forwarder_main: $(SRC)ebpf_forwarder_main.c $(BUILD)ebpf_forwarder.o $(BUILD)config.o
+	@mkdir -p $(EBPF_BUILD)
+	$(CC) -O2 -g -DUSE_JEMALLOC $^ -I $(Include_path) $(EBPF_LIBS) -o $@
+	@echo "独立 eBPF forwarder 编译完成！"
+
+# =========================================================
+
 compile:
 	gcc -O2 -DUSE_JEMALLOC -c $(SRC)array.c -o $(BUILD)array.o -I $(Include_path) && \
 	gcc -O2 -DUSE_JEMALLOC -c $(SRC)reactor.c -o $(BUILD)reactor.o -I $(Include_path) && \
@@ -57,7 +68,8 @@ compile:
 	gcc -O2 -DUSE_JEMALLOC -c $(SRC)rdma_replication.c -o $(BUILD)rdma_replication.o -I $(Include_path) && \
 	gcc -O2 -DUSE_JEMALLOC -c $(SRC)master_service.c -o $(BUILD)master_service.o -I $(Include_path) && \
 	gcc -O2 -DUSE_JEMALLOC -c $(SRC)slave_service.c -o $(BUILD)slave_service.o -I $(Include_path) && \
-	gcc -O2 -DUSE_JEMALLOC -c $(SRC)ebpf_forwarder.c -o $(BUILD)ebpf_forwarder.o -I $(Include_path)
+	gcc -O2 -DUSE_JEMALLOC -c $(SRC)ebpf_forwarder.c -o $(BUILD)ebpf_forwarder.o -I $(Include_path) && \
+	gcc -O2 -DUSE_JEMALLOC -c $(SRC)slave_manager.c -o $(BUILD)slave_manager.o -I $(Include_path)
 
 compile_debug:
 	gcc -O2 -g -DUSE_JEMALLOC -c $(SRC)array.c -o $(BUILD)array.o -I $(Include_path) && \
@@ -76,7 +88,8 @@ compile_debug:
 	gcc -O2 -g -DUSE_JEMALLOC -c $(SRC)rdma_replication.c -o $(BUILD)rdma_replication.o -I $(Include_path) && \
 	gcc -O2 -g -DUSE_JEMALLOC -c $(SRC)master_service.c -o $(BUILD)master_service.o -I $(Include_path) && \
 	gcc -O2 -g -DUSE_JEMALLOC -c $(SRC)slave_service.c -o $(BUILD)slave_service.o -I $(Include_path) && \
-	gcc -O2 -g -DUSE_JEMALLOC -c $(SRC)ebpf_forwarder.c -o $(BUILD)ebpf_forwarder.o -I $(Include_path)
+	gcc -O2 -g -DUSE_JEMALLOC -c $(SRC)ebpf_forwarder.c -o $(BUILD)ebpf_forwarder.o -I $(Include_path) && \
+	gcc -O2 -g -DUSE_JEMALLOC -c $(SRC)slave_manager.c -o $(BUILD)slave_manager.o -I $(Include_path)
 
 compile_nojemalloc:
 	gcc -O2 -c $(SRC)array.c -o $(BUILD)array.o -I $(Include_path) && \
@@ -95,4 +108,5 @@ compile_nojemalloc:
 	gcc -O2 -c $(SRC)rdma_replication.c -o $(BUILD)rdma_replication.o -I $(Include_path) && \
 	gcc -O2 -c $(SRC)master_service.c -o $(BUILD)master_service.o -I $(Include_path) && \
 	gcc -O2 -c $(SRC)slave_service.c -o $(BUILD)slave_service.o -I $(Include_path) && \
-	gcc -O2 -c $(SRC)ebpf_forwarder.c -o $(BUILD)ebpf_forwarder.o -I $(Include_path)
+	gcc -O2 -c $(SRC)ebpf_forwarder.c -o $(BUILD)ebpf_forwarder.o -I $(Include_path) && \
+	gcc -O2 -c $(SRC)slave_manager.c -o $(BUILD)slave_manager.o -I $(Include_path)

@@ -30,16 +30,32 @@ void ebpf_unload_xdp(void);
 int ebpf_is_xdp_loaded(void);
 
 /**
- * @brief 进入 eBPF 转发主循环
+ * @brief 进入 eBPF 转发主循环（一对多模式）
  *
  * 此函数会：
- *   1. 使用已有的 slave_fd（SYNC 阶段建立的 TCP 连接）
- *   2. 进入主循环：轮询 perf buffer，将写命令转发给 Slave
- *   3. 在收到 SIGINT/SIGTERM 时退出
+ *   1. 进入主循环：轮询 perf buffer，将写命令转发给所有已注册的 Slave
+ *   2. 同时监听 UDS，接收主进程传递的 slave fd
+ *   3. 支持动态添加/移除 Slave fd
+ *   4. 在收到 SIGINT/SIGTERM 时退出
  *
- * @param slave_fd 已连接到 Slave 的 TCP socket fd
+ * @param uds_fd Unix Domain Socket fd（与主进程通信），<0 则不监听
  * @return 0 正常退出, -1 错误退出
  */
-int ebpf_forwarder_run(int slave_fd);
+int ebpf_forwarder_run(int uds_fd);
+
+/**
+ * @brief 添加 Slave fd 到 forwarder 的转发列表
+ *
+ * @param slave_fd 已连接到 Slave 的 TCP socket fd
+ * @return 0 成功, -1 失败
+ */
+int ebpf_forwarder_add_slave(int slave_fd);
+
+/**
+ * @brief 从 forwarder 的转发列表移除 Slave fd
+ *
+ * @param slave_fd 要移除的 Slave fd
+ */
+void ebpf_forwarder_remove_slave(int slave_fd);
 
 #endif // EBPF_FORWARDER_H

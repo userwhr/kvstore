@@ -3,6 +3,7 @@
 #include "iouringTodesk.h"
 #include "kvs_persist.h"
 #include "config.h"
+#include "slave_manager.h"
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -31,7 +32,7 @@ int send_cb(int fd);
 int epfd = 0;
 int g_listen_fd = -1; /* Reactor 的 listen fd，暴露给外部使用 */
 int g_slave_fd =
-    -1; /* Slave 节点的 client fd，用于 eBPF forwarder 转发写命令 */
+    -1; /* Slave 模式下：与 Master 的连接 fd，Master 端不使用 */
 
 struct conn conn_list[CONNECTION_SIZE] = {0};
 
@@ -146,6 +147,14 @@ int recv_cb(int fd) {
   ret = recv(fd, conn->rbuffer + conn->rlength,
              conn->rbuf_cap - conn->rlength, 0);
   if (ret <= 0) {
+    /* 如果是 Slave 断连，通知 forwarder 并清理 */
+    if (conn->is_slave) {
+      fprintf(stderr, "[Reactor] Slave fd=%d disconnected\n", fd);
+      extern void forwarder_send_remove_slave(int fd);
+      forwarder_send_remove_slave(fd);
+      extern void slave_unregister(int fd);
+      slave_unregister(fd);
+    }
     free(conn->rbuffer);
     conn->rbuffer = NULL;
     close(fd);
@@ -201,7 +210,7 @@ int recv_cb(int fd) {
     }
 
     kvs_result_t kvs_ret;
-    if (g_slave_fd == fd && g_config.enable_slave == 1) {
+    if (is_slave_fd(fd) && g_config.enable_slave == 1) {
       char tmp_response[1024];
       kvs_ret =
           kvs_filter_protocol(fd, tokens, msg, paramCnt + 1, tmp_response);
@@ -222,7 +231,7 @@ int recv_cb(int fd) {
     }
 
     if (kvs_ret.client_type == CLIENT_TYPE_SLAVE) {
-      g_slave_fd = fd;
+      conn_list[fd].is_slave = 1;
     }
 
     tokenPoolFreeAll(cmd, params, paramCnt);
@@ -288,7 +297,7 @@ int send_cb(int fd) {
   if (conn->send_queue_cnt > 0) {
     set_event(fd, EPOLLOUT, 0);
   } else {
-    if (!g_config.enable_slave && fd == g_slave_fd) {
+    if (!g_config.enable_slave && is_slave_fd(fd)) {
       epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
     } else {
       set_event(fd, EPOLLIN, 0);

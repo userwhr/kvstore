@@ -1,16 +1,12 @@
 #include "kvstore.h"
 #include "config.h"
-#include "ebpf_forwarder.h"
-#include "rbtree.h"
-#include "rdma_replication.h"
+#include "slave_manager.h"
 #include "traversal.h"
-#include <fcntl.h>
 #ifdef USE_JEMALLOC
 #include <jemalloc/jemalloc.h>
 #else
 #include <malloc.h>
 #endif
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,115 +28,6 @@ kvs_array_t *global_array = NULL;
 kvs_rbtree_t *global_rbtree = NULL;
 kvs_hash_t *global_hash = NULL;
 kvs_skiplist_t *global_skiplist = NULL;
-
-/*
- * SYNC 后处理线程：RDMA 传输 + XDP 加载 + fork forwarder
- * 在独立线程中执行，避免阻塞 Reactor event loop
- */
-static void *sync_thread_func(void *arg) {
-  // printf("[SYNC] Sync thread started\n");
-
-  // 1. 重新打开文件读取最新内容，通过 RDMA 发送
-  const void *sync_data = NULL;
-  size_t sync_size = 0;
-
-  FILE *fp = fopen(g_config.log_path, "rb");
-  if (fp) {
-    fseek(fp, 0, SEEK_END);
-    sync_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-
-    if (sync_size > 0) {
-      char *file_data = (char *)malloc(sync_size);
-      if (file_data) {
-        size_t read_ret = fread(file_data, 1, sync_size, fp);
-        if (read_ret == sync_size) {
-          sync_data = file_data;
-        } else {
-          free(file_data);
-          sync_data = NULL;
-          sync_size = 0;
-        }
-      }
-    }
-    fclose(fp);
-  }
-
-  if (sync_data && sync_size > 0) {
-    // printf("[SYNC] Sending %zu bytes via RDMA on port %d...\n",
-    //        sync_size, g_config.slave_rdma_port);
-
-    int rdma_ret =
-        rdma_master_send_mem(sync_data, sync_size, g_config.slave_rdma_port);
-    free((void *)sync_data);
-    if (rdma_ret != 0) {
-      fprintf(stderr, "[SYNC] RDMA data transfer failed\n");
-      g_syncing = 0;
-      return NULL;
-    }
-    // printf("[SYNC] RDMA data transfer complete (%zu bytes)\n", sync_size);
-  } else {
-    fprintf(stderr, "[SYNC] No data to send via RDMA\n");
-    g_syncing = 0;
-    return NULL;
-  }
-
-  // 2. RDMA 传输完成，加载 XDP 程序到网卡
-  // printf("[SYNC] RDMA complete, loading XDP program...\n");
-
-  ebpf_init_rlimit();
-
-  if (!ebpf_is_xdp_loaded()) {
-    int xdp_ret = ebpf_load_xdp("ens33");
-    if (xdp_ret != 0) {
-      fprintf(stderr, "[SYNC] Failed to load XDP program\n");
-      g_syncing = 0;
-      return NULL;
-    }
-  }
-  // printf("[SYNC] XDP loaded on ens33\n");
-
-  /* 3. 等待 g_slave_fd 被设置（由 reactor 主进程设置） */
-  // printf("[SYNC] Waiting for g_slave_fd...\n");
-  int wait_count = 0;
-  while (g_slave_fd < 0 && wait_count < 50) {
-    usleep(100000); /* 100ms */
-    wait_count++;
-  }
-
-  if (g_slave_fd < 0) {
-    fprintf(stderr, "[SYNC] g_slave_fd not set, exiting\n");
-    g_syncing = 0;
-    return NULL;
-  }
-
-  // printf("[SYNC] g_slave_fd=%d, starting forwarder\n", g_slave_fd);
-
-  /* 4. forwarder 启动前，先释放同步锁，恢复写操作 */
-  g_syncing = 0;
-  // printf("[SYNC] eBPF forwarder starting, write operations resumed\n");
-
-  /* 5. 运行 eBPF forwarder（阻塞，直到收到 SIGINT/SIGTERM） */
-  extern volatile int g_shutdown_requested;
-  while (!g_shutdown_requested) {
-    ebpf_forwarder_run(g_slave_fd);
-    if (g_shutdown_requested) {
-      break;
-    }
-    usleep(100000);
-  }
-
-  // printf("[SYNC] eBPF forwarder exited\n");
-
-  // 同步完成，释放同步锁
-  g_syncing = 0;
-  // printf("[SYNC] Full sync complete, write operations resumed\n");
-
-  return NULL;
-}
-
-// 主从同步标志：SYNC 进行中时，阻止写操作
-extern volatile int g_syncing;
 
 // 原有kvs_init函数...
 void kvs_init(void) {
@@ -212,26 +99,29 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
   }
 
   // ====================== 主从同步锁检查 ======================
-  // 如果 SYNC 正在进行中，阻止所有写操作
-  if (g_syncing) {
-    int is_write = 0;
-    if ((cmd >= KVS_CMD_SET && cmd <= KVS_CMD_DEL) ||   // array: SET, DEL
-        (cmd == KVS_CMD_MOD) ||                         // array: MOD
-        (cmd >= KVS_CMD_RSET && cmd <= KVS_CMD_RDEL) || // rbtree: RSET, RDEL
-        (cmd == KVS_CMD_RMOD) ||                        // rbtree: RMOD
-        (cmd >= KVS_CMD_HSET && cmd <= KVS_CMD_HDEL) || // hash: HSET, HDEL
-        (cmd == KVS_CMD_HMOD) ||                        // hash: HMOD
-        (cmd >= KVS_CMD_SKSET &&
-         cmd <= KVS_CMD_SKDEL) || // skiplist: SKSET, SKDEL
-        (cmd == KVS_CMD_SKMOD) || // skiplist: SKMOD
-        (cmd == SAVE) ||          // SAVE
-        (cmd == FLUSHALL)) {      // FLUSHALL
-      is_write = 1;
-    }
-    if (is_write) {
-      length = sprintf(response, "-SYNC Syncing in progress\r\n");
-      result.len = strlen(response);
-      return result;
+  // 如果当前 fd 是正在同步的 Slave，阻止其写操作
+  // 注意：一对多模式下，不同 Slave 独立同步，互不影响
+  if (g_config.enable_slave && is_slave_fd(fd) && is_slave_syncing(fd)) {
+    {
+      int is_write = 0;
+      if ((cmd >= KVS_CMD_SET && cmd <= KVS_CMD_DEL) ||   // array: SET, DEL
+          (cmd == KVS_CMD_MOD) ||                         // array: MOD
+          (cmd >= KVS_CMD_RSET && cmd <= KVS_CMD_RDEL) || // rbtree: RSET, RDEL
+          (cmd == KVS_CMD_RMOD) ||                        // rbtree: RMOD
+          (cmd >= KVS_CMD_HSET && cmd <= KVS_CMD_HDEL) || // hash: HSET, HDEL
+          (cmd == KVS_CMD_HMOD) ||                        // hash: HMOD
+          (cmd >= KVS_CMD_SKSET &&
+           cmd <= KVS_CMD_SKDEL) || // skiplist: SKSET, SKDEL
+          (cmd == KVS_CMD_SKMOD) || // skiplist: SKMOD
+          (cmd == SAVE) ||          // SAVE
+          (cmd == FLUSHALL)) {      // FLUSHALL
+        is_write = 1;
+      }
+      if (is_write) {
+        length = sprintf(response, "-SYNC Syncing in progress\r\n");
+        result.len = strlen(response);
+        return result;
+      }
     }
   }
   // ==========================================================
@@ -241,7 +131,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
   switch (cmd) {
   // 数组 SET（兼容 Redis：key 存在时覆盖）
   case KVS_CMD_SET:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -287,7 +177,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 数组 DEL
   case KVS_CMD_DEL:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -310,7 +200,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 数组 MOD
   case KVS_CMD_MOD:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -347,7 +237,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 红黑树 RSET
   case KVS_CMD_RSET:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -387,7 +277,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 红黑树 RDEL
   case KVS_CMD_RDEL:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -408,7 +298,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 红黑树 RMOD
   case KVS_CMD_RMOD:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -445,7 +335,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 哈希 HSET
   case KVS_CMD_HSET:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -484,7 +374,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 哈希 HDEL
   case KVS_CMD_HDEL:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -505,7 +395,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 哈希 HMOD
   case KVS_CMD_HMOD:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -542,7 +432,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 跳表 SKSET
   case KVS_CMD_SKSET:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -582,7 +472,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 跳表 SKDEL
   case KVS_CMD_SKDEL:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -603,13 +493,13 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 跳表 SKMOD
   case KVS_CMD_SKMOD:
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
       break;
     }
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,
                   "-READONLY You can't write against a read only replica.\r\n");
@@ -712,31 +602,47 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     break;
   }
   case SYNC: {
-    if (g_config.enable_slave && fd != g_slave_fd) {
+    /* Slave 模式下不允许再接受 SYNC */
+    if (g_config.enable_slave) {
       length = sprintf(response, "-ERR SYNC command is for master only\r\n");
+      break;
+    }
+
+    /* 检查是否超过最大 Slave 数量 */
+    if (slave_count() >= g_config.max_slaves) {
+      length = sprintf(response,
+                        "-ERR max slaves (%d) reached\r\n",
+                        g_config.max_slaves);
+      break;
+    }
+
+    /* 注册此连接为 Slave */
+    int reg_ret = slave_register(fd);
+    if (reg_ret == -1) {
+      length = sprintf(response, "-ERR max slaves reached\r\n");
+      break;
+    } else if (reg_ret == -2) {
+      length = sprintf(response, "-ERR already registered as slave\r\n");
       break;
     }
 
     /* 标记此连接为 Slave 节点 */
     result.client_type = CLIENT_TYPE_SLAVE;
 
-    // 设置同步标志，阻止写操作
-    g_syncing = 1;
-    // printf("[SYNC] Starting full sync, write operations blocked\n");
+    /* 设置 per-slave 同步标志，阻止该 Slave 的写操作 */
+    slave_set_syncing(fd, 1);
 
-    // 1. 执行 SAVE（将当前内存数据持久化到磁盘）
+    /* 执行 SAVE（将当前内存数据持久化到磁盘） */
     if (g_config.enable_full_persist == 1) {
       dump_all_to_disk();
     }
 
-    // 2. 回复 +OK（先返回，让 Reactor 发送响应给 Slave）
+    /* 回复 +OK（先返回，让 Reactor 发送响应给 Slave） */
     length = sprintf(response, "+OK\r\n");
 
-    // 3. 在独立线程中执行 RDMA 传输 + XDP 加载 + fork forwarder
-    //    不能阻塞 Reactor event loop，否则 +OK 响应无法发送
-    pthread_t sync_thread;
-    pthread_create(&sync_thread, NULL, &sync_thread_func, NULL);
-    pthread_detach(sync_thread);
+    /* 在独立线程中执行 RDMA 传输 */
+    /* 不能阻塞 Reactor event loop，否则 +OK 响应无法发送 */
+    slave_start_sync(fd);
 
     break;
   }

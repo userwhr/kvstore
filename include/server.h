@@ -13,6 +13,7 @@ typedef int (*RCALLBACK)(int fd);
 // 连接结构体：动态接收缓冲区 + 零拷贝发送队列
 typedef struct conn {
   int fd;
+  int is_slave;  // 标记此连接是否为 Slave
 
   // 接收缓存（动态分配，懒分配+翻倍扩容）
   char *rbuffer;   // 动态分配的接收缓冲区

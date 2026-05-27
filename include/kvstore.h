@@ -40,7 +40,8 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 // Reactor 的 listen fd（在 reactor.c 中定义）
 extern int g_listen_fd;
 
-// Slave 的 client fd（在 reactor.c 中定义，用于 eBPF forwarder 转发写命令）
+// Slave 模式下：与 Master 的连接 fd（在 slave_service.c 中设置）
+// 仅在 Slave 端使用，Master 端使用 slave_manager.h 中的 API 管理多个 Slave
 extern int g_slave_fd;
 
 // 不直接使用系统调用分配内存，优势:跨平台能力

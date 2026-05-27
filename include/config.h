@@ -33,6 +33,7 @@ typedef struct {
 
   // 主从模式
   int enable_slave;
+  int max_slaves;  // 最大 Slave 数量
 
   // Slave 配置（仅在 enable_slave=1 时生效）
   char slave_of_ip[64];

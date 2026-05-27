@@ -5,9 +5,9 @@
  * 功能：
  *   1. 加载 ebpf_inc_sync.o 到指定网卡
  *   2. 创建 perf buffer，接收 eBPF 上报的写命令
- *   3. 通过全局 g_slave_fd 将写命令转发给 Slave
+ *   3. 将写命令扇出转发给所有已注册的 Slave
  *
- * 本文件被编译为库，由主程序调用，不再作为独立可执行文件。
+ * 支持一对多模式：动态添加/移除 Slave fd
  * ============================================================================
  */
 #include "ebpf_forwarder.h"
@@ -20,6 +20,7 @@
 #include <linux/if_link.h>
 #include <linux/types.h>
 #include <net/if.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -39,27 +40,92 @@ static struct perf_buffer *g_pb = NULL;
 /* 转发计数器 */
 int g_forward_count = 0;
 
+/* ==================== Slave fd 管理（一对多） ==================== */
+#define FORWARDER_MAX_SLAVES 32
+static int forwarder_slaves[FORWARDER_MAX_SLAVES];
+static int forwarder_slave_count = 0;
+static pthread_mutex_t forwarder_slave_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /*
- * 非阻塞 drain slave 的 TCP 读缓冲区
+ * 添加 Slave fd 到 forwarder 的转发列表
+ * 返回：0 成功，-1 列表已满，-2 已存在
+ */
+int ebpf_forwarder_add_slave(int slave_fd) {
+  pthread_mutex_lock(&forwarder_slave_mutex);
+
+  /* 检查是否已存在 */
+  for (int i = 0; i < FORWARDER_MAX_SLAVES; i++) {
+    if (forwarder_slaves[i] == slave_fd) {
+      pthread_mutex_unlock(&forwarder_slave_mutex);
+      return -2;
+    }
+  }
+
+  /* 找空位插入 */
+  for (int i = 0; i < FORWARDER_MAX_SLAVES; i++) {
+    if (forwarder_slaves[i] < 0) {
+      forwarder_slaves[i] = slave_fd;
+      forwarder_slave_count++;
+      /* 设置非阻塞 */
+      int flags = fcntl(slave_fd, F_GETFL, 0);
+      if (flags >= 0)
+        fcntl(slave_fd, F_SETFL, flags | O_NONBLOCK);
+      pthread_mutex_unlock(&forwarder_slave_mutex);
+      /* slave 添加成功 */
+      return 0;
+    }
+  }
+
+  pthread_mutex_unlock(&forwarder_slave_mutex);
+  return -1;
+}
+
+/*
+ * 从 forwarder 的转发列表移除 Slave fd
+ */
+void ebpf_forwarder_remove_slave(int slave_fd) {
+  pthread_mutex_lock(&forwarder_slave_mutex);
+  for (int i = 0; i < FORWARDER_MAX_SLAVES; i++) {
+    if (forwarder_slaves[i] == slave_fd) {
+      forwarder_slaves[i] = -1;
+      forwarder_slave_count--;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&forwarder_slave_mutex);
+}
+
+/*
+ * 初始化 forwarder slave 数组
+ */
+static void forwarder_slaves_init(void) {
+  for (int i = 0; i < FORWARDER_MAX_SLAVES; i++) {
+    forwarder_slaves[i] = -1;
+  }
+  forwarder_slave_count = 0;
+}
+
+/*
+ * 非阻塞 drain 单个 slave 的 TCP 读缓冲区
  * 返回值：0=正常, -1=slave 断连
  */
-static int drain_slave_recv(void) {
-  if (g_slave_fd < 0)
+static int drain_one_slave(int fd) {
+  if (fd < 0)
     return -1;
 
   char tmp[128];
   while (1) {
-    int ret = recv(g_slave_fd, tmp, sizeof(tmp), MSG_DONTWAIT);
+    int ret = recv(fd, tmp, sizeof(tmp), MSG_DONTWAIT);
     if (ret > 0)
-      continue; /* 读到了，继续 drain */
+      continue;
     if (ret == 0) {
-      fprintf(stderr, "[Forwarder] Slave disconnected\n");
+      fprintf(stderr, "[Forwarder] Slave fd=%d disconnected\n", fd);
       return -1;
     }
-    /* ret < 0 */
     if (errno == EAGAIN || errno == EWOULDBLOCK)
-      return 0; /* 缓冲区已空 */
-    fprintf(stderr, "[Forwarder] Slave recv error: %s\n", strerror(errno));
+      return 0;
+    fprintf(stderr, "[Forwarder] Slave fd=%d recv error: %s\n",
+            fd, strerror(errno));
     return -1;
   }
 }
@@ -282,24 +348,46 @@ void perf_event_handler(void *ctx, int cpu, void *data, __u32 data_size) {
       continue;
     }
 
-    // 转发写指令给slave
-    int send_ret =
-        send(g_slave_fd, resp_buf, cmd_len, MSG_NOSIGNAL | MSG_DONTWAIT);
-    if (send_ret <= 0) {
-      if (send_ret < 0 && (errno == EPIPE || errno == ECONNRESET)) {
-        fprintf(stderr, "[Forwarder] Slave connection lost\n");
-        g_slave_fd = -1;
+    /* 扇出转发写指令给所有 Slave */
+    pthread_mutex_lock(&forwarder_slave_mutex);
+    int active_slaves = 0;
+    int failed_slaves[FORWARDER_MAX_SLAVES];
+    int failed_count = 0;
+
+    for (int i = 0; i < FORWARDER_MAX_SLAVES; i++) {
+      if (forwarder_slaves[i] < 0)
+        continue;
+
+      int send_ret = send(forwarder_slaves[i], resp_buf, cmd_len,
+                          MSG_NOSIGNAL | MSG_DONTWAIT);
+      if (send_ret <= 0) {
+        if (send_ret < 0 && (errno == EPIPE || errno == ECONNRESET)) {
+          fprintf(stderr, "[Forwarder] Slave fd=%d connection lost\n",
+                  forwarder_slaves[i]);
+          failed_slaves[failed_count++] = forwarder_slaves[i];
+        }
+        continue;
       }
-      break;
+
+      active_slaves++;
+
+      /* drain 该 slave 的接收缓冲区 */
+      if (drain_one_slave(forwarder_slaves[i]) < 0) {
+        failed_slaves[failed_count++] = forwarder_slaves[i];
+      }
+    }
+    pthread_mutex_unlock(&forwarder_slave_mutex);
+
+    /* 移除断连的 Slave */
+    for (int i = 0; i < failed_count; i++) {
+      ebpf_forwarder_remove_slave(failed_slaves[i]);
+    }
+
+    if (active_slaves == 0 && forwarder_slave_count == 0) {
+      /* 没有活跃的 Slave，跳过 */
     }
 
     g_forward_count++;
-
-    // 清空slave接收缓冲区，防止窗口满
-    if (drain_slave_recv() < 0) {
-      g_slave_fd = -1;
-      break;
-    }
 
     // 滑动缓冲区：移除已处理的完整帧
     if (resp_buf_len > 0) {
@@ -343,7 +431,6 @@ int ebpf_load_xdp(const char *ifname) {
   int err;
 
   if (g_obj) {
-    fprintf(stderr, "[Forwarder] XDP already loaded, unloading first\n");
     ebpf_unload_xdp();
   }
 
@@ -476,9 +563,9 @@ void ebpf_unload_xdp(void) {
   }
 }
 
-/* 把 resp_buf 里积压的命令尽量发出去 */
+/* 把 resp_buf 里积压的命令尽量发出去（扇出给所有 Slave） */
 static void flush_resp_buf(void) {
-  while (resp_buf_len > 0 && g_slave_fd >= 0) {
+  while (resp_buf_len > 0 && forwarder_slave_count > 0) {
     /* 跳过非 RESP 数据 */
     if (resp_buf[0] != '*') {
       int skip = 0;
@@ -503,21 +590,38 @@ static void flush_resp_buf(void) {
       continue;
     }
 
-    int send_ret =
-        send(g_slave_fd, resp_buf, cmd_len, MSG_NOSIGNAL | MSG_DONTWAIT);
-    if (send_ret <= 0) {
-      if (send_ret < 0 && (errno == EPIPE || errno == ECONNRESET)) {
-        fprintf(stderr, "[Forwarder] Slave connection lost (flush)\n");
-        g_slave_fd = -1;
-      }
-      break;
-    }
-    g_forward_count++;
+    /* 扇出转发给所有 Slave */
+    pthread_mutex_lock(&forwarder_slave_mutex);
+    int failed_slaves[FORWARDER_MAX_SLAVES];
+    int failed_count = 0;
 
-    if (drain_slave_recv() < 0) {
-      g_slave_fd = -1;
-      break;
+    for (int i = 0; i < FORWARDER_MAX_SLAVES; i++) {
+      if (forwarder_slaves[i] < 0)
+        continue;
+
+      int send_ret = send(forwarder_slaves[i], resp_buf, cmd_len,
+                          MSG_NOSIGNAL | MSG_DONTWAIT);
+      if (send_ret <= 0) {
+        if (send_ret < 0 && (errno == EPIPE || errno == ECONNRESET)) {
+          fprintf(stderr, "[Forwarder] Slave fd=%d connection lost (flush)\n",
+                  forwarder_slaves[i]);
+          failed_slaves[failed_count++] = forwarder_slaves[i];
+        }
+        continue;
+      }
+
+      if (drain_one_slave(forwarder_slaves[i]) < 0) {
+        failed_slaves[failed_count++] = forwarder_slaves[i];
+      }
     }
+    pthread_mutex_unlock(&forwarder_slave_mutex);
+
+    /* 移除断连的 Slave */
+    for (int i = 0; i < failed_count; i++) {
+      ebpf_forwarder_remove_slave(failed_slaves[i]);
+    }
+
+    g_forward_count++;
 
     resp_buf_len -= cmd_len;
     if (resp_buf_len > 0)
@@ -525,7 +629,72 @@ static void flush_resp_buf(void) {
   }
 }
 
-int ebpf_forwarder_run(int slave_fd) {
+/*
+ * 处理 UDS 消息（从主进程接收 slave fd）
+ * 返回：0=正常, -1=收到 QUIT 命令
+ */
+static int handle_uds_message(int uds_fd) {
+  char buf[64];
+  struct msghdr msg = {0};
+  struct iovec iov = {buf, sizeof(buf) - 1};
+  char ctrl_buf[CMSG_SPACE(sizeof(int))];
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  msg.msg_control = ctrl_buf;
+  msg.msg_controllen = sizeof(ctrl_buf);
+
+  ssize_t n = recvmsg(uds_fd, &msg, MSG_DONTWAIT);
+  if (n <= 0) {
+    if (n == 0) {
+      fprintf(stderr, "[Forwarder] UDS disconnected\n");
+      return -1;
+    }
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+      return 0;
+    fprintf(stderr, "[Forwarder] UDS recv error: %s\n", strerror(errno));
+    return -1;
+  }
+
+  buf[n] = '\0';
+
+  /* 检查是否有传递的 fd */
+  int recv_fd = -1;
+  struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+  if (cmsg && cmsg->cmsg_level == SOL_SOCKET &&
+      cmsg->cmsg_type == SCM_RIGHTS) {
+    memcpy(&recv_fd, CMSG_DATA(cmsg), sizeof(int));
+  }
+
+  /* 解析命令 */
+  if (strncmp(buf, "ADD", 3) == 0 && recv_fd >= 0) {
+    int ret = ebpf_forwarder_add_slave(recv_fd);
+    if (ret == 0) {
+      /* slave fd 接收成功 */
+    } else {
+      fprintf(stderr, "[Forwarder] Failed to add slave fd=%d (ret=%d)\n",
+              recv_fd, ret);
+      close(recv_fd);
+    }
+  } else if (strncmp(buf, "REM", 3) == 0) {
+    int fd_to_remove = -1;
+    if (n > 4) {
+      fd_to_remove = atoi(buf + 4);
+    }
+    if (fd_to_remove >= 0) {
+      ebpf_forwarder_remove_slave(fd_to_remove);
+      /* slave fd 移除成功 */
+    }
+  } else if (strncmp(buf, "QUIT", 4) == 0) {
+    return -1;
+  } else {
+    if (recv_fd >= 0)
+      close(recv_fd);
+  }
+
+  return 0;
+}
+
+int ebpf_forwarder_run(int uds_fd) {
   int err;
 
   if (!g_obj) {
@@ -533,29 +702,43 @@ int ebpf_forwarder_run(int slave_fd) {
     return -1;
   }
 
-  // 用传入的slave_fd，覆盖全局，保证有效性
-  g_slave_fd = slave_fd;
-  int flags = fcntl(g_slave_fd, F_GETFL, 0);
-  if (flags >= 0)
-    fcntl(g_slave_fd, F_SETFL, flags | O_NONBLOCK);
+  /* 初始化 slave 数组 */
+  forwarder_slaves_init();
 
-  int cmd_count_fd = -1;
-  struct bpf_map *count_map = bpf_object__find_map_by_name(g_obj, "cmd_count");
-  if (count_map)
-    cmd_count_fd = bpf_map__fd(count_map);
+  /* 设置 UDS 为非阻塞 */
+  if (uds_fd >= 0) {
+    int flags = fcntl(uds_fd, F_GETFL, 0);
+    if (flags >= 0)
+      fcntl(uds_fd, F_SETFL, flags | O_NONBLOCK);
+  }
 
   extern volatile int g_shutdown_requested;
 
-  while (!g_shutdown_requested && g_slave_fd != -1) {
-    if (g_slave_fd < 0) {
-      fprintf(stderr, "[Forwarder] g_slave_fd invalid, exiting\n");
-      break;
+  while (!g_shutdown_requested) {
+    /* 处理 UDS 消息（从主进程接收/移除 slave fd） */
+    if (uds_fd >= 0) {
+      int uds_ret = handle_uds_message(uds_fd);
+      if (uds_ret < 0) {
+        break;
+      }
     }
 
-    /* drain slave 的响应，防止其 TCP 发送缓冲区满导致 reactor 阻塞 */
-    if (drain_slave_recv() < 0) {
-      fprintf(stderr, "[Forwarder] Slave disconnected\n");
-      break;
+    /* drain 所有 slave 的响应 */
+    pthread_mutex_lock(&forwarder_slave_mutex);
+    int failed_slaves[FORWARDER_MAX_SLAVES];
+    int failed_count = 0;
+    for (int i = 0; i < FORWARDER_MAX_SLAVES; i++) {
+      if (forwarder_slaves[i] < 0)
+        continue;
+      if (drain_one_slave(forwarder_slaves[i]) < 0) {
+        failed_slaves[failed_count++] = forwarder_slaves[i];
+      }
+    }
+    pthread_mutex_unlock(&forwarder_slave_mutex);
+
+    /* 移除断连的 Slave */
+    for (int i = 0; i < failed_count; i++) {
+      ebpf_forwarder_remove_slave(failed_slaves[i]);
     }
 
     /* 把缓冲区里的数据尽量发出去 */
