@@ -5,7 +5,11 @@
 #include "rdma_replication.h"
 #include "traversal.h"
 #include <fcntl.h>
+#ifdef USE_JEMALLOC
+#include <jemalloc/jemalloc.h>
+#else
 #include <malloc.h>
+#endif
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,9 +144,6 @@ extern volatile int g_syncing;
 
 // 原有kvs_init函数...
 void kvs_init(void) {
-  // if (g_config.enable_slab_pool) {
-  //   kvs_init_slots();
-  // }
   if (g_config.enable_array) {
     global_array = (kvs_array_t *)malloc(sizeof(kvs_array_t));
     if (global_array == NULL) {
@@ -238,7 +239,7 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
   int ret = 0;
   // printf("cmd=%d", cmd);
   switch (cmd) {
-  // 数组 SET
+  // 数组 SET（兼容 Redis：key 存在时覆盖）
   case KVS_CMD_SET:
     if (g_config.enable_slave && fd != g_slave_fd) {
       length =
@@ -257,7 +258,14 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
       result.need_aof = 1;
       length = sprintf(response, "+OK\r\n");
     } else if (ret > 0) {
-      length = sprintf(response, "-KEY EXIST\r\n");
+      // key 已存在，覆盖旧值
+      int mod_ret = array_mod(global_array, tokens[1], tokens[2]);
+      if (mod_ret == 0) {
+        result.need_aof = 1;
+        length = sprintf(response, "+OK\r\n");
+      } else {
+        length = sprintf(response, "-ERR overwrite failed\r\n");
+      }
     }
     break;
 
@@ -649,44 +657,57 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     break;
   }
   case COMMAND: {
+    // 每个命令 6 个元素：name, arity, flags, first-key, last-key, step
     struct {
       const char *name;
-      int arity;         // 参数个数（含命令本身）
-      const char *flags; // 命令属性
-    } cmd_info[] = {{"set", 3, "write"},       {"get", 2, "readonly"},
-                    {"del", 2, "write"},       {"mod", 3, "write"},
-                    {"exist", 2, "readonly"},  {"rset", 3, "write"},
-                    {"rget", 2, "readonly"},   {"rdel", 2, "write"},
-                    {"rmod", 3, "write"},      {"rexist", 2, "readonly"},
-                    {"hset", 3, "write"},      {"hget", 2, "readonly"},
-                    {"hdel", 2, "write"},      {"hmod", 3, "write"},
-                    {"hexist", 2, "readonly"}, {"skset", 3, "write"},
-                    {"skget", 2, "readonly"},  {"skdel", 2, "write"},
-                    {"skmod", 3, "write"},     {"skexist", 2, "readonly"},
-                    {"save", 1, "write"},      {"command", 1, "readonly"},
-                    {"flushall", 1, "write"},  {"dbcount", 1, "readonly"}};
+      int arity;
+      const char *flags;
+      int first_key;
+      int last_key;
+      int step;
+    } cmd_info[] = {
+        {"set", 3, "write", 1, 1, 1},     {"get", 2, "readonly", 1, 1, 1},
+        {"del", -2, "write", 1, -1, 1},   {"mod", 3, "write", 1, 1, 1},
+        {"exist", 2, "readonly", 1, 1, 1}, {"rset", 3, "write", 1, 1, 1},
+        {"rget", 2, "readonly", 1, 1, 1},  {"rdel", 2, "write", 1, 1, 1},
+        {"rmod", 3, "write", 1, 1, 1},     {"rexist", 2, "readonly", 1, 1, 1},
+        {"hset", 3, "write", 1, 1, 1},     {"hget", 2, "readonly", 1, 1, 1},
+        {"hdel", 2, "write", 1, 1, 1},     {"hmod", 3, "write", 1, 1, 1},
+        {"hexist", 2, "readonly", 1, 1, 1}, {"skset", 3, "write", 1, 1, 1},
+        {"skget", 2, "readonly", 1, 1, 1},  {"skdel", 2, "write", 1, 1, 1},
+        {"skmod", 3, "write", 1, 1, 1},    {"skexist", 2, "readonly", 1, 1, 1},
+        {"save", 1, "write", 0, 0, 0},     {"command", 0, "readonly", 0, 0, 0},
+        {"flushall", 1, "write", 0, 0, 0}, {"dbcount", 1, "readonly", 0, 0, 0},
+        {"ping", -1, "readonly", 0, 0, 0}, {"config", -2, "readonly", 0, 0, 0}};
     int cmd_count = sizeof(cmd_info) / sizeof(cmd_info[0]);
 
-    // 1. 数组头部
     length = sprintf(response, "*%d\r\n", cmd_count);
 
-    // 2. 逐个添加完整命令描述子数组
     for (int i = 0; i < cmd_count; i++) {
-      // 子数组包含 3 个元素：命令名、参数个数、属性数组
-      length += sprintf(response + length, "*3\r\n");
+      // 6 个元素：name, arity, flags, first-key, last-key, step
+      length += sprintf(response + length, "*6\r\n");
 
-      // 2.1 命令名（批量字符串）
+      // name
       int name_len = strlen(cmd_info[i].name);
       length += sprintf(response + length, "$%d\r\n%s\r\n", name_len,
                         cmd_info[i].name);
 
-      // 2.2 参数个数（整数）
+      // arity
       length += sprintf(response + length, ":%d\r\n", cmd_info[i].arity);
 
-      // 2.3 属性数组（子数组）
+      // flags (array of strings)
       int flag_len = strlen(cmd_info[i].flags);
       length += sprintf(response + length, "*1\r\n$%d\r\n%s\r\n", flag_len,
                         cmd_info[i].flags);
+
+      // first-key
+      length += sprintf(response + length, ":%d\r\n", cmd_info[i].first_key);
+
+      // last-key
+      length += sprintf(response + length, ":%d\r\n", cmd_info[i].last_key);
+
+      // step
+      length += sprintf(response + length, ":%d\r\n", cmd_info[i].step);
     }
     break;
   }
@@ -749,6 +770,22 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
       skiplist_destory(global_skiplist);
       skiplist_creat(global_skiplist);
     }
+    // 强制归还 free 的内存给 OS，降低 RSS
+    #ifdef USE_JEMALLOC
+    {
+      unsigned narenas = 0;
+      size_t len = sizeof(narenas);
+      if (mallctl("arenas.narenas", &narenas, &len, NULL, 0) == 0) {
+        for (unsigned i = 0; i < narenas; i++) {
+          char cmd[64];
+          snprintf(cmd, sizeof(cmd), "arena.%u.purge", i);
+          mallctl(cmd, NULL, NULL, NULL, 0);
+        }
+      }
+    }
+    #else
+    malloc_trim(0);
+    #endif
     length = sprintf(response, "+OK\r\n");
     break;
   }
@@ -767,6 +804,28 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
         info, sizeof(info), "array:%d rbtree:%d hash:%d skiplist:%d total:%d",
         array_cnt, rbtree_cnt, hash_cnt, skiplist_cnt, total);
     length = sprintf(response, "$%d\r\n%s\r\n", info_len, info);
+    break;
+  }
+  case PING: {
+    length = sprintf(response, "+PONG\r\n");
+    break;
+  }
+  case CONFIG_CMD: {
+    // CONFIG GET <param> — 返回基本配置信息
+    if (count >= 3 && strcasecmp(tokens[1], "GET") == 0) {
+      const char *param = tokens[2];
+      if (strcasecmp(param, "maxmemory") == 0) {
+        length = sprintf(response, "*2\r\n$10\r\nmaxmemory\r\n$3\r\n0\r\n");
+      } else if (strcasecmp(param, "save") == 0) {
+        length = sprintf(response, "*2\r\n$4\r\nsave\r\n$0\r\n\r\n");
+      } else if (strcasecmp(param, "appendonly") == 0) {
+        length = sprintf(response, "*2\r\n$10\r\nappendonly\r\n$2\r\nno\r\n");
+      } else {
+        length = sprintf(response, "*0\r\n");
+      }
+    } else {
+      length = sprintf(response, "+OK\r\n");
+    }
     break;
   }
   // 未知命令

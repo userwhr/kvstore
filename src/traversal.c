@@ -424,7 +424,7 @@ int dump_all_to_disk(void) {
   }
 
   // 打开文件（截断模式）
-  int fd = open("./log/full_log.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  int fd = open(g_config.log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd < 0) {
     perror("[RDB] open failed");
     free(buf.data);

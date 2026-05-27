@@ -78,6 +78,8 @@ enum {
   ECHO,
   FLUSHALL,
   DBCOUNT,
+  PING,
+  CONFIG_CMD,
   KVS_CMD_MAX,
 };
 #endif

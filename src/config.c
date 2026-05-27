@@ -1,4 +1,5 @@
 #include "config.h"
+#include <strings.h>
 
 // 全局配置实例
 KvConfig g_config;
@@ -32,20 +33,41 @@ static void trim_quotes(char *str) {
   }
 }
 
-// 解析单行配置
+// 工具函数：将配置值转为整数（支持 "1"/"0" 和 "yes"/"no"）
+static int parse_bool_value(const char *value) {
+  if (strcasecmp(value, "yes") == 0 || strcmp(value, "1") == 0)
+    return 1;
+  if (strcasecmp(value, "no") == 0 || strcmp(value, "0") == 0)
+    return 0;
+  return atoi(value);
+}
+
+// 解析单行配置（格式：KEY VALUE，空格分隔，支持行尾 # 注释）
 static void parse_line(char *line, KvConfig *cfg) {
   line = trim_whitespace(line);
   if (line[0] == '#' || line[0] == '\0')
     return; // 跳过注释/空行
 
-  // 分割 key 和 value
-  char *equal = strchr(line, '=');
-  if (equal == NULL)
-    return;
+  // 分割 key 和 value（按第一个空格/制表符分割）
+  char *sep = line;
+  while (*sep && !isspace((unsigned char)*sep))
+    sep++;
+  if (*sep == '\0')
+    return; // 没有 value，跳过
 
-  *equal = '\0';
+  *sep = '\0';
   char *key = trim_whitespace(line);
-  char *value = trim_whitespace(equal + 1);
+  char *value = trim_whitespace(sep + 1);
+
+  // 去掉行尾 # 注释
+  char *comment = strchr(value, '#');
+  if (comment) {
+    // 确保 # 前面是空格，避免误切（如值本身含 #）
+    if (comment == value || isspace((unsigned char)*(comment - 1))) {
+      *comment = '\0';
+      value = trim_whitespace(value);
+    }
+  }
 
   // ====================== 字符串配置项 ======================
   if (strcmp(key, "LOG_PATH") == 0) {
@@ -61,9 +83,9 @@ static void parse_line(char *line, KvConfig *cfg) {
 
   // ====================== 整型配置项 ======================
   else if (strcmp(key, "ENABLE_FULL_PERSIST") == 0)
-    cfg->enable_full_persist = atoi(value);
+    cfg->enable_full_persist = parse_bool_value(value);
   else if (strcmp(key, "ENABLE_INCREMENTAL_PERSIST") == 0)
-    cfg->enable_incremental_persist = atoi(value);
+    cfg->enable_incremental_persist = parse_bool_value(value);
   else if (strcmp(key, "MAX_RECOVER_CMD") == 0)
     cfg->max_recover_cmd = atoi(value);
   else if (strcmp(key, "LINE_MAX") == 0)
@@ -77,17 +99,15 @@ static void parse_line(char *line, KvConfig *cfg) {
   else if (strcmp(key, "MAX_CMD_NUM") == 0)
     cfg->max_cmd_num = atoi(value);
   else if (strcmp(key, "ENABLE_RBTREE") == 0)
-    cfg->enable_rbtree = atoi(value);
+    cfg->enable_rbtree = parse_bool_value(value);
   else if (strcmp(key, "ENABLE_ARRAY") == 0)
-    cfg->enable_array = atoi(value);
+    cfg->enable_array = parse_bool_value(value);
   else if (strcmp(key, "ENABLE_HASH") == 0)
-    cfg->enable_hash = atoi(value);
+    cfg->enable_hash = parse_bool_value(value);
   else if (strcmp(key, "ENABLE_SKIPLIST") == 0)
-    cfg->enable_skiplist = atoi(value);
-  else if (strcmp(key, "ENABLE_SLAB_POOL") == 0)
-    cfg->enable_slab_pool = atoi(value);
+    cfg->enable_skiplist = parse_bool_value(value);
   else if (strcmp(key, "ENABLE_SLAVE") == 0)
-    cfg->enable_slave = atoi(value);
+    cfg->enable_slave = parse_bool_value(value);
   else if (strcmp(key, "SLAVE_OF_IP") == 0) {
     trim_quotes(value);
     strncpy(cfg->slave_of_ip, value, sizeof(cfg->slave_of_ip) - 1);
@@ -118,7 +138,6 @@ int load_config(const char *config_path) {
   g_config.enable_array = 1;
   g_config.enable_hash = 1;
   g_config.enable_skiplist = 1;
-  g_config.enable_slab_pool = 1;
   g_config.port = 6379;
   // Slave 默认配置
   strcpy(g_config.slave_of_ip, "127.0.0.1");

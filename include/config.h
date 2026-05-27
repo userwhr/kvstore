@@ -31,9 +31,6 @@ typedef struct {
   int enable_hash;
   int enable_skiplist;
 
-  // 内存池
-  int enable_slab_pool;
-
   // 主从模式
   int enable_slave;
 

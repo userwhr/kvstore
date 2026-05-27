@@ -1,6 +1,7 @@
 #include "config.h"
 #include "kvstore.h"
 #include "resp.h"
+#include <strings.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -148,7 +149,7 @@ static int mmapProtocal(char *tokens[]) {
   // 匹配指令类型（完全复用你的协议逻辑）
   int cmd = FILE_CMD_START;
   for (cmd = FILE_CMD_START; cmd < FILE_CMD_MAX; cmd++) {
-    if (strcmp(tokens[0], file_command[cmd]) == 0) {
+    if (strcasecmp(tokens[0], file_command[cmd]) == 0) {
       break;
     }
   }

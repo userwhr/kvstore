@@ -75,60 +75,12 @@ void kvs_init_slots(void) {
 void *kvs_malloc(size_t size) {
   if (size == 0)
     return NULL;
-  if (g_config.enable_slab_pool == 1) {
-    if (size <= MEM_POOL_MAX_SIZE) {
-      if (g_inited) {
-        size_t align_sz = align_size(size);
-        int idx = get_slot_idx(align_sz);
-        if (idx >= 0 && idx < SLOT_NUM) {
-          mem_slot_t *slot = &g_slots[idx];
-          if (!slot->free_list) {
-            expand_slot(slot);
-          }
-          if (slot->free_list) {
-            mem_item_t *item = slot->free_list;
-            slot->free_list = item->next;
-            memset(item, 0, size); // 清零后返回
-            return item;
-          }
-        }
-      }
-    }
-  }
-
-  // 超大或内存池禁用时直接使用 malloc
   void *ptr = malloc(size);
   return ptr;
 }
 
-// 修正后的释放函数 —— 能够正确将池内内存放回 free_list
 void kvs_free(void *ptr) {
   if (!ptr)
     return;
-  if (g_config.enable_slab_pool == 1) {
-    // 遍历所有槽位，检查指针属于哪个大块区间
-    for (int i = 0; i < SLOT_NUM; i++) {
-      mem_slot_t *slot = &g_slots[i];
-      mem_chunk_t *c = slot->chunks;
-      while (c) {
-        if ((char *)ptr >= c->start && (char *)ptr < c->end) {
-          // 验证偏移量是否是 block_size 的整数倍（确保是池内对象）
-          size_t offset = (char *)ptr - c->start;
-          if (offset % slot->block_size == 0) {
-            // 正确归属，放回空闲链表
-            mem_item_t *item = (mem_item_t *)ptr;
-            item->next = slot->free_list;
-            slot->free_list = item;
-            return;
-          }
-          // 如果偏移不对齐，说明不是池内对象，跳出内层循环继续检查其他槽位
-          break;
-        }
-        c = c->next;
-      }
-    }
-  }
-
-  // 不归属于任何池内存块，则用系统 free 释放
   free(ptr);
 }

@@ -49,3 +49,6 @@ core.*
 *svg
 out*
 FlameGrapg
+app*
+noje
+redis*

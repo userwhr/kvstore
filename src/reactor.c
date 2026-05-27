@@ -172,22 +172,9 @@ int recv_cb(int fd) {
       tokenPoolFreeAll(cmd, params, paramCnt);
       break;
     }
-    /* consumed == -2: 命令不存在，cmd/params 已填充，计算消耗长度后继续 */
-    if (consumed == -2) {
-      /* 计算已解析的 RESP 消息长度: *N\r\n + 每个参数 $L\r\nV\r\n */
-      consumed = 0;
-      char *buf = conn->rbuffer + conn->rpos;
-      /* *N\r\n */
-      while (buf[consumed] != '\r') consumed++;
-      consumed += 2;
-      /* $L\r\nV\r\n for each param */
-      for (int i = 0; i < paramCnt + 1; i++) {
-        consumed++; /* $ */
-        while (buf[consumed] != '\r') consumed++;
-        consumed += 2; /* \r\n */
-        int len = i == 0 ? strlen(cmd) : strlen(params[i-1]);
-        consumed += len + 2; /* V\r\n */
-      }
+    /* consumed < -1: 命令不存在，consumed 的绝对值为已消耗字节数 */
+    if (consumed < -1) {
+      consumed = -consumed;
     }
 
     /* 构造原始 RESP 消息用于 AOF */

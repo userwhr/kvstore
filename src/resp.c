@@ -91,14 +91,82 @@ int matchCommand(const char *cmd, StoreType *type) {
 
 // ====================== 单次解析：同时提取 token 并返回消耗字节数
 // 返回值：>0 消耗字节数，0 数据不完整，-1 协议错误，-2 命令不存在
+/* 内联命令解析：PING\r\n → cmd="PING", 返回消耗字节数 */
+static int parseInlineCommand(const char *buf, int bufLen, char **outCmd,
+                              char **params, int *paramCnt) {
+  const char *p = buf;
+  const char *end = buf + bufLen;
+
+  /* 跳过前导空格 */
+  while (p < end && (*p == ' ' || *p == '\t'))
+    p++;
+
+  /* 找到 \r\n 或 \n 结尾 */
+  const char *line_end = p;
+  while (line_end < end && *line_end != '\r' && *line_end != '\n')
+    line_end++;
+
+  if (line_end >= end)
+    return 0; /* 数据不完整 */
+
+  int line_len = line_end - p;
+  if (line_len == 0)
+    return -1;
+
+  /* 按空格分割 tokens */
+  char *line = malloc(line_len + 1);
+  memcpy(line, p, line_len);
+  line[line_len] = '\0';
+
+  *paramCnt = 0;
+  char *saveptr = NULL;
+  char *token = strtok_r(line, " \t", &saveptr);
+  int first = 1;
+  while (token != NULL) {
+    char *tbuf = tokenPoolAlloc(strlen(token));
+    if (tbuf == NULL)
+      tbuf = strdup(token);
+    else
+      strcpy(tbuf, token);
+
+    if (first) {
+      *outCmd = tbuf;
+      first = 0;
+    } else {
+      params[(*paramCnt)++] = tbuf;
+    }
+    token = strtok_r(NULL, " \t", &saveptr);
+  }
+  free(line);
+
+  /* 跳过 \r\n */
+  int consumed = line_end - buf;
+  if (consumed < bufLen && buf[consumed] == '\r')
+    consumed++;
+  if (consumed < bufLen && buf[consumed] == '\n')
+    consumed++;
+
+  return consumed;
+}
+
 int parseRespKvOnePass(const char *buf, int bufLen, char **outCmd,
                        char **params, int *paramCnt, StoreType *type) {
   const char *p = buf;
   const char *end = buf + bufLen;
   *paramCnt = 0;
 
-  if (p >= end || *p != '*')
-    return -1;
+  /* 内联命令：不以 '*' 开头 */
+  if (p >= end)
+    return 0;
+  if (*p != '*') {
+    int consumed = parseInlineCommand(buf, bufLen, outCmd, params, paramCnt);
+    if (consumed <= 0)
+      return consumed;
+    int cmdIdx = matchCommand(*outCmd, type);
+    if (cmdIdx == -1)
+      return -consumed; /* 返回负的已消耗字节数 */
+    return consumed;
+  }
   p++;
   if (p >= end) return 0;
   int totalArgs = parseInt((char **)&p);
@@ -135,6 +203,6 @@ int parseRespKvOnePass(const char *buf, int bufLen, char **outCmd,
 
   int cmdIdx = matchCommand(*outCmd, type);
   if (cmdIdx == -1)
-    return -2;
+    return -(int)(p - buf); /* 返回负的已消耗字节数 */
   return p - buf;
 }
