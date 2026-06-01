@@ -90,13 +90,9 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
     return result;
   }
 
-  // 匹配命令
-  int cmd = KVS_CMD_START;
-  for (cmd = KVS_CMD_START; cmd < KVS_CMD_MAX; cmd++) {
-    if (strcasecmp(tokens[0], command[cmd]) == 0) {
-      break;
-    }
-  }
+  // 匹配命令（O(1) 哈希查找）
+  int cmd = cmdHashLookup(tokens[0], strlen(tokens[0]));
+  if (cmd < 0) cmd = KVS_CMD_MAX;  /* 未知命令 */
 
   // ====================== 主从同步锁检查 ======================
   // 如果当前 fd 是正在同步的 Slave，阻止其写操作
@@ -493,12 +489,6 @@ kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
 
   // 跳表 SKMOD
   case KVS_CMD_SKMOD:
-    if (g_config.enable_slave && is_slave_fd(fd)) {
-      length =
-          sprintf(response,
-                  "-READONLY You can't write against a read only replica.\r\n");
-      break;
-    }
     if (g_config.enable_slave && is_slave_fd(fd)) {
       length =
           sprintf(response,

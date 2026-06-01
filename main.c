@@ -71,6 +71,7 @@ int main(int argc, char *argv[]) {
 
   // 初始化数据结构
   kvs_init();
+  cmdHashTableInit();  /* 初始化命令哈希表，O(1) 命令查找 */
   uringInit();
 
   if (g_config.enable_slave) {

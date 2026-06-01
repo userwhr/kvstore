@@ -63,7 +63,7 @@ static void skipCrlf(char **p) {
 }
 
 // ====================== 命令匹配函数（小驼峰）======================
-// 输入命令字符串，返回命令索引、存储类型
+// 输入命令字符串，返回命令索引、存储类型（使用哈希表 O(1) 查找）
 int matchCommand(const char *cmd, StoreType *type) {
   // 计算命令长度（直到\r\n或结束符）
   int cmd_len = 0;
@@ -71,22 +71,19 @@ int matchCommand(const char *cmd, StoreType *type) {
     cmd_len++;
   }
 
-  for (int i = 0; i < COMMAND_COUNT; i++) {
-    if (strncasecmp(cmd, command[i], cmd_len) == 0 &&
-        command[i][cmd_len] == '\0') {
-      // 判定存储类型
-      if (i < 5)
-        *type = STORE_ARRAY;
-      else if (i < 10)
-        *type = STORE_RBTREE;
-      else if (i < 15)
-        *type = STORE_HASH;
-      else
-        *type = STORE_SKIPLIST;
-      return i;
-    }
-  }
-  return -1; // 命令不存在
+  int idx = cmdHashLookup(cmd, cmd_len);
+  if (idx < 0) return -1;
+
+  // 判定存储类型
+  if (idx < 5)
+    *type = STORE_ARRAY;
+  else if (idx < 10)
+    *type = STORE_RBTREE;
+  else if (idx < 15)
+    *type = STORE_HASH;
+  else
+    *type = STORE_SKIPLIST;
+  return idx;
 }
 
 // ====================== 单次解析：同时提取 token 并返回消耗字节数

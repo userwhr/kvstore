@@ -37,6 +37,10 @@ int kvs_split_token(char *msg, char *tokens[]);
 kvs_result_t kvs_filter_protocol(int fd, char *tokens[], char *msg, int count,
                                  char *response);
 
+// Cmd.c 命令哈希表
+void cmdHashTableInit(void);
+int cmdHashLookup(const char *cmd, int cmd_len);
+
 // Reactor 的 listen fd（在 reactor.c 中定义）
 extern int g_listen_fd;
 

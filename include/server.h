@@ -5,7 +5,7 @@
 
 #define BUFFER_LENGTH (1024 * 10)
 #define MAX_SEND_QUEUE 256
-#define RBUF_INIT_CAP 4096
+#define RBUF_INIT_CAP 4096 * 2
 #define RBUF_MAX_CAP (256 * 1024)
 
 typedef int (*RCALLBACK)(int fd);
@@ -13,13 +13,13 @@ typedef int (*RCALLBACK)(int fd);
 // 连接结构体：动态接收缓冲区 + 零拷贝发送队列
 typedef struct conn {
   int fd;
-  int is_slave;  // 标记此连接是否为 Slave
+  int is_slave; // 标记此连接是否为 Slave
 
   // 接收缓存（动态分配，懒分配+翻倍扩容）
-  char *rbuffer;   // 动态分配的接收缓冲区
-  int rbuf_cap;    // 当前容量
-  int rpos;        // 读指针（已解析到的位置）
-  int rlength;     // 有效数据末尾位置
+  char *rbuffer; // 动态分配的接收缓冲区
+  int rbuf_cap;  // 当前容量
+  int rpos;      // 读指针（已解析到的位置）
+  int rlength;   // 有效数据末尾位置
 
   // 发送队列（零拷贝设计，完全保留）
   char wbuffer[BUFFER_LENGTH];

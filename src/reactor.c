@@ -5,6 +5,7 @@
 #include "config.h"
 #include "slave_manager.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -21,8 +22,6 @@
 
 #define CONNECTION_SIZE 1024
 #define MAX_PORTS 1
-char global_rbuff[1024 * 1024];
-static kvs_handler handler;
 extern file_content_t *kvs_log;
 extern file_content_t *Icr_log;
 int accept_cb(int fd);
@@ -36,27 +35,19 @@ int g_slave_fd =
 
 struct conn conn_list[CONNECTION_SIZE] = {0};
 
-// fd
 int set_event(int fd, int event, int flag) {
+  struct epoll_event ev;
+  ev.events = event | EPOLLET;  // 边缘触发
+  ev.data.fd = fd;
 
   if (flag) { // non-zero add
-
-    struct epoll_event ev;
-    ev.events = event;
-    ev.data.fd = fd;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
-
+    return epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
   } else { // zero mod
-
-    struct epoll_event ev;
-    ev.events = event;
-    ev.data.fd = fd;
-    epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
+    return epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
   }
 }
 
 int event_register(int fd, int event) {
-
   if (fd < 0)
     return -1;
 
@@ -64,7 +55,7 @@ int event_register(int fd, int event) {
   conn_list[fd].r_action.recv_callback = recv_cb;
   conn_list[fd].send_callback = send_cb;
 
-  set_event(fd, event, 1);
+  return set_event(fd, event, 1);
 }
 
 // listenfd(sockfd) --> EPOLLIN --> accept_cb
@@ -73,32 +64,47 @@ int accept_cb(int fd) {
   struct sockaddr_in clientaddr;
   socklen_t len = sizeof(clientaddr);
 
-  int clientfd = accept(fd, (struct sockaddr *)&clientaddr, &len);
-  // printf("accept finshed: %d\n", clientfd);
-  if (clientfd < 0) {
-    printf("accept errno: %d --> %s\n", errno, strerror(errno));
-    return -1;
+  /* ET模式：循环accept直到EAGAIN */
+  while (1) {
+    int clientfd = accept(fd, (struct sockaddr *)&clientaddr, &len);
+    if (clientfd < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK)
+        break;  /* 没有更多连接，退出循环 */
+      printf("accept errno: %d --> %s\n", errno, strerror(errno));
+      break;
+    }
+
+    int opt = 1;
+    setsockopt(clientfd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+
+    /* 设置非阻塞模式，ET模式必须 */
+    int flags = fcntl(clientfd, F_GETFL, 0);
+    fcntl(clientfd, F_SETFL, flags | O_NONBLOCK);
+
+    /* 重置连接状态，防止 fd 复用时继承旧连接的脏数据 */
+    memset(&conn_list[clientfd], 0, sizeof(conn_t));
+    conn_list[clientfd].fd = clientfd;
+
+    event_register(clientfd, EPOLLIN);
   }
-  // printf("建立链接成功,fd=%d的\n", clientfd);
-
-  int opt = 1;
-  setsockopt(clientfd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-
-  /* 重置连接状态，防止 fd 复用时继承旧连接的脏数据 */
-  memset(&conn_list[clientfd], 0, sizeof(conn_t));
-  conn_list[clientfd].fd = clientfd;
-
-  event_register(clientfd, EPOLLIN); // | EPOLLET
 
   return 0;
 }
 
-// 工具函数：计算字符串长度（遇到 \r 停止，不修改原数据）
-static int str_len_raw(char *s) {
-  int len = 0;
-  while (s[len] != '\r' && s[len] != '\0')
-    len++;
-  return len;
+/* 关闭连接：清理 slave 状态、释放 buffer、关闭 fd、从 epoll 移除 */
+static void close_conn(int fd) {
+  conn_t *conn = &conn_list[fd];
+  if (conn->is_slave) {
+    fprintf(stderr, "[Reactor] Slave fd=%d disconnected\n", fd);
+    extern void forwarder_send_remove_slave(int fd);
+    forwarder_send_remove_slave(fd);
+    extern void slave_unregister(int fd);
+    slave_unregister(fd);
+  }
+  free(conn->rbuffer);
+  conn->rbuffer = NULL;
+  close(fd);
+  epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
 }
 
 int recv_cb(int fd) {
@@ -117,136 +123,136 @@ int recv_cb(int fd) {
     conn->rpos = 0;
     conn->rlength = 0;
   }
+      /* compact：读指针过半时把未消费数据移到开头 */
+    if (conn->rpos > 0 && conn->rpos > conn->rbuf_cap / 2) {
+      int remain = conn->rlength - conn->rpos;
+      if (remain > 0)
+        memmove(conn->rbuffer, conn->rbuffer + conn->rpos, remain);
+      conn->rlength = remain;
+      conn->rpos = 0;
+    }
 
-  /* compact：读指针过半时把未消费数据移到开头 */
-  if (conn->rpos > 0 && conn->rpos > conn->rbuf_cap / 2) {
-    int remain = conn->rlength - conn->rpos;
-    if (remain > 0)
-      memmove(conn->rbuffer, conn->rbuffer + conn->rpos, remain);
-    conn->rlength = remain;
-    conn->rpos = 0;
-  }
+    /* 扩容：剩余空间不足时翻倍 */
+    int avail = conn->rbuf_cap - conn->rlength;
+    if (avail < 1024) {
+      int new_cap = conn->rbuf_cap * 2;
+      if (new_cap > RBUF_MAX_CAP) new_cap = RBUF_MAX_CAP;
+      if (new_cap > conn->rbuf_cap) {
+        char *new_buf = realloc(conn->rbuffer, new_cap);
+        if (new_buf == NULL) {
+          close(fd);
+          epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+          return 0;
+        }
+        conn->rbuffer = new_buf;
+        conn->rbuf_cap = new_cap;
+      }
+    }
 
-  /* 扩容：剩余空间不足时翻倍 */
-  int avail = conn->rbuf_cap - conn->rlength;
-  if (avail < 1024) {
-    int new_cap = conn->rbuf_cap * 2;
-    if (new_cap > RBUF_MAX_CAP) new_cap = RBUF_MAX_CAP;
-    if (new_cap > conn->rbuf_cap) {
-      char *new_buf = realloc(conn->rbuffer, new_cap);
-      if (new_buf == NULL) {
+  /* ET模式：循环读取直到 EAGAIN */
+  while (1) {
+    ret = recv(fd, conn->rbuffer + conn->rlength,
+               conn->rbuf_cap - conn->rlength, 0);
+    if (ret < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK)
+        break;  /* 数据读完，退出循环 */
+      /* 其他错误，关闭连接 */
+      close_conn(fd);
+      return 0;
+    }
+    if (ret == 0) {
+      /* 对端关闭连接 */
+      close_conn(fd);
+      return 0;
+    }
+    conn->rlength += ret;
+
+    /* 每次recv后立即处理数据 */
+    while (1) {
+      if (conn->rpos >= conn->rlength)
+        break;
+
+      char *cmd = NULL;
+      char *params[10] = {0};
+      int paramCnt = 0;
+      StoreType type;
+
+      int consumed = parseRespKvOnePass(conn->rbuffer + conn->rpos,
+                                        conn->rlength - conn->rpos,
+                                        &cmd, &params[0], &paramCnt, &type);
+      if (consumed == 0)  /* 数据不完整，等待更多数据 */
+        break;
+      if (consumed == -1) { /* 协议格式错误，丢弃 */
+        tokenPoolFreeAll(cmd, params, paramCnt);
+        break;
+      }
+      /* consumed < -1: 命令不存在，consumed 的绝对值为已消耗字节数 */
+      if (consumed < -1) {
+        consumed = -consumed;
+      }
+
+      /* 构造原始 RESP 消息 */
+      char *msg = conn->rbuffer + conn->rpos;
+      int msg_len = consumed;
+
+      char *tokens[20] = {0};
+      tokens[0] = cmd;
+      for (int i = 0; i < paramCnt; i++)
+        tokens[i + 1] = params[i];
+
+      uint32_t curr_off = 0;
+      if (conn->send_queue_cnt > 0) {
+        int last_idx = conn->send_queue_tail - 1;
+        if (last_idx < 0)
+          last_idx = MAX_SEND_QUEUE - 1;
+        curr_off =
+            conn->send_off_queue[last_idx] + conn->send_len_queue[last_idx];
+      }
+      if (curr_off + 512 > BUFFER_LENGTH ||
+          conn->send_queue_cnt >= MAX_SEND_QUEUE) {
+        tokenPoolFreeAll(cmd, params, paramCnt);
+        break;
+      }
+
+      kvs_result_t kvs_ret;
+      if (is_slave_fd(fd) && g_config.enable_slave == 1) {
+        char tmp_response[1024];
+        kvs_ret =
+            kvs_filter_protocol(fd, tokens, msg, paramCnt + 1, tmp_response);
+      } else {
+        kvs_ret = kvs_filter_protocol(fd, tokens, msg, paramCnt + 1,
+                                      conn->wbuffer + curr_off);
+      }
+      int curr_len = kvs_ret.len;
+
+      if (kvs_ret.need_aof && g_config.enable_incremental_persist == 1) {
+        char *async_buf = (char *)malloc(msg_len + 1);
+        if (async_buf) {
+          memcpy(async_buf, msg, msg_len);
+          async_buf[msg_len] = '\0';
+          uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
+                          writeCallback, async_buf);
+        }
+      }
+
+      if (kvs_ret.client_type == CLIENT_TYPE_SLAVE) {
+        conn_list[fd].is_slave = 1;
+      }
+
+      tokenPoolFreeAll(cmd, params, paramCnt);
+
+      if (conn->send_queue_cnt >= MAX_SEND_QUEUE) {
         close(fd);
         epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
         return 0;
       }
-      conn->rbuffer = new_buf;
-      conn->rbuf_cap = new_cap;
+      conn->send_off_queue[conn->send_queue_tail] = curr_off;
+      conn->send_len_queue[conn->send_queue_tail] = curr_len;
+      conn->send_queue_tail = (conn->send_queue_tail + 1) % MAX_SEND_QUEUE;
+      conn->send_queue_cnt++;
+
+      conn->rpos += consumed;
     }
-  }
-
-  ret = recv(fd, conn->rbuffer + conn->rlength,
-             conn->rbuf_cap - conn->rlength, 0);
-  if (ret <= 0) {
-    /* 如果是 Slave 断连，通知 forwarder 并清理 */
-    if (conn->is_slave) {
-      fprintf(stderr, "[Reactor] Slave fd=%d disconnected\n", fd);
-      extern void forwarder_send_remove_slave(int fd);
-      forwarder_send_remove_slave(fd);
-      extern void slave_unregister(int fd);
-      slave_unregister(fd);
-    }
-    free(conn->rbuffer);
-    conn->rbuffer = NULL;
-    close(fd);
-    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-    return 0;
-  }
-  conn->rlength += ret;
-
-  while (1) {
-    if (conn->rpos >= conn->rlength)
-      break;
-
-    char *cmd = NULL;
-    char *params[10] = {0};
-    int paramCnt = 0;
-    StoreType type;
-
-    int consumed = parseRespKvOnePass(conn->rbuffer + conn->rpos,
-                                      conn->rlength - conn->rpos,
-                                      &cmd, &params[0], &paramCnt, &type);
-    if (consumed == 0)  /* 数据不完整，等待更多数据 */
-      break;
-    if (consumed == -1) { /* 协议格式错误，丢弃 */
-      tokenPoolFreeAll(cmd, params, paramCnt);
-      break;
-    }
-    /* consumed < -1: 命令不存在，consumed 的绝对值为已消耗字节数 */
-    if (consumed < -1) {
-      consumed = -consumed;
-    }
-
-    /* 构造原始 RESP 消息用于 AOF */
-    char *msg = conn->rbuffer + conn->rpos;
-    int msg_len = consumed;
-
-    char *tokens[20] = {0};
-    tokens[0] = cmd;
-    for (int i = 0; i < paramCnt; i++)
-      tokens[i + 1] = params[i];
-
-    uint32_t curr_off = 0;
-    if (conn->send_queue_cnt > 0) {
-      int last_idx = conn->send_queue_tail - 1;
-      if (last_idx < 0)
-        last_idx = MAX_SEND_QUEUE - 1;
-      curr_off =
-          conn->send_off_queue[last_idx] + conn->send_len_queue[last_idx];
-    }
-    if (curr_off + 512 > BUFFER_LENGTH ||
-        conn->send_queue_cnt >= MAX_SEND_QUEUE) {
-      tokenPoolFreeAll(cmd, params, paramCnt);
-      break;
-    }
-
-    kvs_result_t kvs_ret;
-    if (is_slave_fd(fd) && g_config.enable_slave == 1) {
-      char tmp_response[1024];
-      kvs_ret =
-          kvs_filter_protocol(fd, tokens, msg, paramCnt + 1, tmp_response);
-    } else {
-      kvs_ret = kvs_filter_protocol(fd, tokens, msg, paramCnt + 1,
-                                    conn->wbuffer + curr_off);
-    }
-    int curr_len = kvs_ret.len;
-
-    if (kvs_ret.need_aof && g_config.enable_incremental_persist == 1) {
-      char *async_buf = (char *)malloc(msg_len + 1);
-      if (async_buf) {
-        memcpy(async_buf, msg, msg_len);
-        async_buf[msg_len] = '\0';
-        uringAsyncWrite(Icr_log->file_fd, async_buf, msg_len, 0,
-                        writeCallback, async_buf);
-      }
-    }
-
-    if (kvs_ret.client_type == CLIENT_TYPE_SLAVE) {
-      conn_list[fd].is_slave = 1;
-    }
-
-    tokenPoolFreeAll(cmd, params, paramCnt);
-
-    if (conn->send_queue_cnt >= MAX_SEND_QUEUE) {
-      close(fd);
-      epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-      return 0;
-    }
-    conn->send_off_queue[conn->send_queue_tail] = curr_off;
-    conn->send_len_queue[conn->send_queue_tail] = curr_len;
-    conn->send_queue_tail = (conn->send_queue_tail + 1) % MAX_SEND_QUEUE;
-    conn->send_queue_cnt++;
-
-    conn->rpos += consumed;
   }
 
   if (conn->send_queue_cnt > 0)
@@ -315,6 +321,10 @@ int init_server(unsigned short port) {
   int opt = 1;
   setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
+  /* 设置非阻塞模式，ET模式必须 */
+  int flags = fcntl(sockfd, F_GETFL, 0);
+  fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+
   struct sockaddr_in servaddr;
   servaddr.sin_family = AF_INET;
   servaddr.sin_addr.s_addr = htonl(INADDR_ANY); // 0.0.0.0
@@ -336,7 +346,6 @@ int init_server(unsigned short port) {
 int react_entrence(unsigned short port, kvs_handler hd) {
 
   tokenPoolInit();
-  handler = hd;
   epfd = epoll_create(1);
 
   int i = 0;
@@ -383,10 +392,12 @@ int react_entrence(unsigned short port, kvs_handler hd) {
       if (events[i].events & EPOLLOUT) {
         conn_list[connfd].send_callback(connfd);
       }
-      if (g_config.enable_incremental_persist == 1) {
-        uringProcessCqes(); // 执行回调函数,释放堆上资源
-      }
 #endif
+    }
+
+    /* 每轮 epoll_wait 结束后处理一次 io_uring CQE，避免重复调用 */
+    if (g_config.enable_incremental_persist == 1) {
+      uringProcessCqes();
     }
   }
 }
