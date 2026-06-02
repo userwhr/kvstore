@@ -20,7 +20,6 @@
 #include <linux/if_link.h>
 #include <linux/types.h>
 #include <net/if.h>
-#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -44,19 +43,15 @@ int g_forward_count = 0;
 #define FORWARDER_MAX_SLAVES 32
 static int forwarder_slaves[FORWARDER_MAX_SLAVES];
 static int forwarder_slave_count = 0;
-static pthread_mutex_t forwarder_slave_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /*
  * 添加 Slave fd 到 forwarder 的转发列表
  * 返回：0 成功，-1 列表已满，-2 已存在
  */
 int ebpf_forwarder_add_slave(int slave_fd) {
-  pthread_mutex_lock(&forwarder_slave_mutex);
-
   /* 检查是否已存在 */
   for (int i = 0; i < FORWARDER_MAX_SLAVES; i++) {
     if (forwarder_slaves[i] == slave_fd) {
-      pthread_mutex_unlock(&forwarder_slave_mutex);
       return -2;
     }
   }
@@ -70,13 +65,11 @@ int ebpf_forwarder_add_slave(int slave_fd) {
       int flags = fcntl(slave_fd, F_GETFL, 0);
       if (flags >= 0)
         fcntl(slave_fd, F_SETFL, flags | O_NONBLOCK);
-      pthread_mutex_unlock(&forwarder_slave_mutex);
       /* slave 添加成功 */
       return 0;
     }
   }
 
-  pthread_mutex_unlock(&forwarder_slave_mutex);
   return -1;
 }
 
@@ -84,7 +77,6 @@ int ebpf_forwarder_add_slave(int slave_fd) {
  * 从 forwarder 的转发列表移除 Slave fd
  */
 void ebpf_forwarder_remove_slave(int slave_fd) {
-  pthread_mutex_lock(&forwarder_slave_mutex);
   for (int i = 0; i < FORWARDER_MAX_SLAVES; i++) {
     if (forwarder_slaves[i] == slave_fd) {
       forwarder_slaves[i] = -1;
@@ -92,7 +84,6 @@ void ebpf_forwarder_remove_slave(int slave_fd) {
       break;
     }
   }
-  pthread_mutex_unlock(&forwarder_slave_mutex);
 }
 
 /*
@@ -349,7 +340,6 @@ void perf_event_handler(void *ctx, int cpu, void *data, __u32 data_size) {
     }
 
     /* 扇出转发写指令给所有 Slave */
-    pthread_mutex_lock(&forwarder_slave_mutex);
     int active_slaves = 0;
     int failed_slaves[FORWARDER_MAX_SLAVES];
     int failed_count = 0;
@@ -376,7 +366,6 @@ void perf_event_handler(void *ctx, int cpu, void *data, __u32 data_size) {
         failed_slaves[failed_count++] = forwarder_slaves[i];
       }
     }
-    pthread_mutex_unlock(&forwarder_slave_mutex);
 
     /* 移除断连的 Slave */
     for (int i = 0; i < failed_count; i++) {
@@ -591,7 +580,6 @@ static void flush_resp_buf(void) {
     }
 
     /* 扇出转发给所有 Slave */
-    pthread_mutex_lock(&forwarder_slave_mutex);
     int failed_slaves[FORWARDER_MAX_SLAVES];
     int failed_count = 0;
 
@@ -614,7 +602,6 @@ static void flush_resp_buf(void) {
         failed_slaves[failed_count++] = forwarder_slaves[i];
       }
     }
-    pthread_mutex_unlock(&forwarder_slave_mutex);
 
     /* 移除断连的 Slave */
     for (int i = 0; i < failed_count; i++) {
@@ -724,7 +711,6 @@ int ebpf_forwarder_run(int uds_fd) {
     }
 
     /* drain 所有 slave 的响应 */
-    pthread_mutex_lock(&forwarder_slave_mutex);
     int failed_slaves[FORWARDER_MAX_SLAVES];
     int failed_count = 0;
     for (int i = 0; i < FORWARDER_MAX_SLAVES; i++) {
@@ -734,7 +720,6 @@ int ebpf_forwarder_run(int uds_fd) {
         failed_slaves[failed_count++] = forwarder_slaves[i];
       }
     }
-    pthread_mutex_unlock(&forwarder_slave_mutex);
 
     /* 移除断连的 Slave */
     for (int i = 0; i < failed_count; i++) {

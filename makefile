@@ -32,22 +32,16 @@ bench:
 	gcc -O2 test/benchmark.c -o test/benchmark
 
 # ===================== eBPF 增量同步 =====================
-ebpf: $(EBPF_BUILD)ebpf_inc_sync.o
-	@echo "eBPF BPF程序编译完成！"
+ebpf: $(EBPF_BUILD)ebpf_inc_sync.o $(EBPF_BUILD)ebpf_forwarder_main
+	@echo "eBPF 编译完成！（BPF程序 + forwarder）"
 
 $(EBPF_BUILD)ebpf_inc_sync.o: $(SRC)XDP.bpf.c
 	@mkdir -p $(EBPF_BUILD)
 	$(CLANG) $(BPF_CFLAGS) $(BPF_HEADERS) -c $< -o $@
 
-# =========================================================
-
-# 独立的 eBPF forwarder 可执行文件（用于 fork+exec 方式）
-ebpf_forwarder_main: $(EBPF_BUILD)ebpf_forwarder_main
-
-$(EBPF_BUILD)ebpf_forwarder_main: $(SRC)ebpf_forwarder_main.c $(BUILD)ebpf_forwarder.o $(BUILD)config.o
+$(EBPF_BUILD)ebpf_forwarder_main: $(SRC)ebpf_forwarder_main.c $(SRC)ebpf_forwarder.c $(SRC)config.c
 	@mkdir -p $(EBPF_BUILD)
 	$(CC) -O2 -g -DUSE_JEMALLOC $^ -I $(Include_path) $(EBPF_LIBS) -o $@
-	@echo "独立 eBPF forwarder 编译完成！"
 
 # =========================================================
 
@@ -90,6 +84,12 @@ compile_debug:
 	gcc -O2 -g -DUSE_JEMALLOC -c $(SRC)slave_service.c -o $(BUILD)slave_service.o -I $(Include_path) && \
 	gcc -O2 -g -DUSE_JEMALLOC -c $(SRC)ebpf_forwarder.c -o $(BUILD)ebpf_forwarder.o -I $(Include_path) && \
 	gcc -O2 -g -DUSE_JEMALLOC -c $(SRC)slave_manager.c -o $(BUILD)slave_manager.o -I $(Include_path)
+
+clean:
+	rm -f kvstore debug noje kv_client test/benchmark
+	rm -f $(BUILD)*.o
+	rm -f $(EBPF_BUILD)*.o
+	@echo "清理完成！"
 
 compile_nojemalloc:
 	gcc -O2 -c $(SRC)array.c -o $(BUILD)array.o -I $(Include_path) && \

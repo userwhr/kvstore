@@ -69,13 +69,6 @@ static int start_forwarder(void) {
     g_forwarder_pid = pid;
     forwarder_set_uds_fd(sv[0]);
     g_forwarder_started = 1;
-
-    /* 加载 XDP 程序到网卡 */
-    ebpf_init_rlimit();
-    int xdp_ret = ebpf_load_xdp("ens33");
-    if (xdp_ret != 0) {
-      /* forwarder 会在自己的进程中加载 XDP，这里失败不影响 */
-    }
   }
 
   return 0;

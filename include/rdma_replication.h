@@ -2,6 +2,7 @@
 #define RDMA_REPLICATION_H
 
 #include <stddef.h>
+#include <semaphore.h>
 
 // 全局同步标志（由 kvstore.c 定义，用于在 SYNC 期间阻止写操作）
 extern volatile int g_syncing;
@@ -23,6 +24,18 @@ int rdma_master_send_file(const char *file_path, int rdma_port);
  * @return 0 成功, -1 失败
  */
 int rdma_master_send_mem(const void *data, size_t data_size, int rdma_port);
+
+/**
+ * @brief Master 端：通过 RDMA 直接发送内存缓冲区数据给 Slave（带就绪通知）
+ *        与 rdma_master_send_mem 相同，但支持通过信号量通知调用方 RDMA 监听已就绪
+ * @param data      内存数据指针
+ * @param data_size 数据大小
+ * @param rdma_port RDMA 监听端口
+ * @param ready_sem 信号量指针，RDMA 监听就绪后 sem_post（可为 NULL）
+ * @return 0 成功, -1 失败
+ */
+int rdma_master_send_mem_ex(const void *data, size_t data_size, int rdma_port,
+                            sem_t *ready_sem);
 
 /**
  * @brief Master 端 RDMA 传输线程入口（文件路径版本，封装了加锁/解锁逻辑）

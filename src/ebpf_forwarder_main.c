@@ -57,8 +57,6 @@ int main(int argc, char *argv[]) {
     ifname = argv[2];
   }
 
-  /* forwarder 启动 */
-
   /* 加载配置文件（ebpf_forwarder.c 需要 g_config.port） */
   if (load_config("./kvstore.conf") != 0) {
     fprintf(stderr, "[Forwarder-Main] Failed to load config file\n");
@@ -79,7 +77,6 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "[Forwarder-Main] Failed to load XDP program on %s\n", ifname);
       return EXIT_FAILURE;
     }
-    /* XDP 加载成功 */
   }
 
   /* 运行 forwarder 主循环（内部处理 UDS + perf buffer） */

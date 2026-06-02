@@ -266,37 +266,39 @@ int send_cb(int fd) {
   if (conn->send_queue_cnt == 0)
     return 0;
 
-  /* 一次 writev 把队列里所有响应发完 */
-  struct iovec iov[MAX_SEND_QUEUE];
-  int cnt = conn->send_queue_cnt;
-  for (int i = 0; i < cnt; i++) {
-    int idx = (conn->send_queue_head + i) % MAX_SEND_QUEUE;
-    iov[i].iov_base = conn->wbuffer + conn->send_off_queue[idx];
-    iov[i].iov_len = conn->send_len_queue[idx];
-  }
+  /* ET模式：循环 writev 直到 EAGAIN，一次事件通知内发完所有数据 */
+  while (conn->send_queue_cnt > 0) {
+    struct iovec iov[MAX_SEND_QUEUE];
+    int cnt = conn->send_queue_cnt;
+    for (int i = 0; i < cnt; i++) {
+      int idx = (conn->send_queue_head + i) % MAX_SEND_QUEUE;
+      iov[i].iov_base = conn->wbuffer + conn->send_off_queue[idx];
+      iov[i].iov_len = conn->send_len_queue[idx];
+    }
 
-  ssize_t sent = writev(fd, iov, cnt);
-  if (sent <= 0) {
-    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-      return 0;
-    close(fd);
-    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-    return sent;
-  }
+    ssize_t sent = writev(fd, iov, cnt);
+    if (sent <= 0) {
+      if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        break; /* 缓冲区满，等下次 EPOLLOUT */
+      close(fd);
+      epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+      return sent;
+    }
 
-  /* 推进队列：跳过已完整发出的条目 */
-  while (sent > 0 && conn->send_queue_cnt > 0) {
-    uint32_t head_len = conn->send_len_queue[conn->send_queue_head];
-    if (sent >= head_len) {
-      sent -= head_len;
-      conn->send_queue_head =
-          (conn->send_queue_head + 1) % MAX_SEND_QUEUE;
-      conn->send_queue_cnt--;
-    } else {
-      /* 当前条目部分发出 */
-      conn->send_off_queue[conn->send_queue_head] += sent;
-      conn->send_len_queue[conn->send_queue_head] -= sent;
-      sent = 0;
+    /* 推进队列：跳过已完整发出的条目 */
+    while (sent > 0 && conn->send_queue_cnt > 0) {
+      uint32_t head_len = conn->send_len_queue[conn->send_queue_head];
+      if (sent >= head_len) {
+        sent -= head_len;
+        conn->send_queue_head =
+            (conn->send_queue_head + 1) % MAX_SEND_QUEUE;
+        conn->send_queue_cnt--;
+      } else {
+        /* 当前条目部分发出 */
+        conn->send_off_queue[conn->send_queue_head] += sent;
+        conn->send_len_queue[conn->send_queue_head] -= sent;
+        sent = 0;
+      }
     }
   }
 
@@ -362,6 +364,12 @@ int react_entrence(unsigned short port, kvs_handler hd) {
 
   /* 如果是 Slave 模式，将 g_slave_fd 注册到 epoll 接收写命令 */
   if (g_config.enable_slave && g_slave_fd >= 0) {
+    /* ET模式必须：g_slave_fd 是阻塞 socket，必须转为非阻塞，
+     * 否则 recv_cb 的 while(1) 循环会在第二次 recv() 时阻塞，
+     * 卡死整个事件循环，导致 listen fd 无法 accept 新连接 */
+    int flags = fcntl(g_slave_fd, F_GETFL, 0);
+    fcntl(g_slave_fd, F_SETFL, flags | O_NONBLOCK);
+
     // printf("[Reactor] Registering slave fd=%d to epoll for write commands\n",
     //        g_slave_fd);
     event_register(g_slave_fd, EPOLLIN);

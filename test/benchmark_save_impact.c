@@ -25,7 +25,7 @@
 /* ── 全局配置 ── */
 static const char *g_host = "127.0.0.1";
 static const char *g_bind = NULL;
-static int g_port = 2000;
+static int g_port = 6379;
 static int g_total = 100000;       /* -n 总请求数 */
 static int g_save_interval = 1000; /* -s 每隔多少个命令发送一次 save */
 
