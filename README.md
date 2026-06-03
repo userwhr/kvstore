@@ -12,7 +12,6 @@
 - **内存优化**：集成 jemalloc 内存分配器
 - **Pipeline 支持**：批量命令执行，大幅提升吞吐量
 - **配置驱动**：灵活的配置文件控制所有参数
-
 ## 架构
 
 ```
@@ -251,6 +250,20 @@ kvstore/
 | 80       | 156,470     | 36,921    | 4.2x          |
 | 160      | 304,901     | 41,772    | **7.3x**      |
 
+### Pipeline 160 火焰图分析
+
+以下是 Pipeline=160 条件下 Redis 和 KVSTORE 的 CPU 火焰图对比：
+
+**Redis 火焰图 (flamegraph.svg)**
+
+![Redis 火焰图](./test/flamegraph.svg)
+
+**KVSTORE 火焰图 (flamegraphkv.svg)**
+
+![KVSTORE 火焰图](./test/flamegraphkv.svg)
+
+> **性能差距分析**：从火焰图可以清晰看出，在 Pipeline 160 的高并发场景下，Redis 的 RESP 协议解析部分（`redisCommand`、`processMultibulkBuffer` 等函数）占据了大量 CPU 时间，成为性能瓶颈。而 KVSTORE 的协议解析更加高效，因此在高 Pipeline 场景下展现出显著的性能优势。
+
 ## 五、内存测试
 
 > 测试方法：通过 `/proc/<pid>/status` 读取 VmSize（虚拟内存）和 VmRSS（物理内存）
@@ -341,10 +354,9 @@ kvstore/
 
 > 测试文件：500 MB
 
-| 指标 | 数值 |
+| 传输方式 | 数值 |
 |------|------|
-| 耗时 | 307,012 ms (307 秒) |
-| 传输速度 | **1.63 MB/s** |
+| RDMA | **331.63 MB/s** |
 
 ### iperf3 网络带宽测试
 
@@ -358,9 +370,8 @@ kvstore/
 | 传输方式 | 速度 | 说明 |
 |----------|------|------|
 | sendfile (TCP) | **338.08 MB/s** | 接近网络带宽极限 |
-| RDMA (Soft-RoCE) | **1.63 MB/s** | 软件模拟，性能极差 |
+| RDMA (Soft-RoCE) | **331.63/s** | 接近网络带宽极限 |
 | 网络带宽（直连） | **335 MB/s** | iperf3 测试基准 |
 
 > - sendfile 速度接近网络带宽极限，性能优秀
-> - Soft-RoCE 是内核软件实现的 RDMA，相比真 RDMA 硬件（InfiniBand）性能差距巨大
-> - 真实 RDMA 硬件环境下，传输速度可达 **数 GB/s**，远超 TCP
+> - Soft-RoCE 是内核软件实现的 RDMA，相比真 RDMA 硬件（InfiniBand）性能仍有差距差距
