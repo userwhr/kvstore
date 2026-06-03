@@ -15,15 +15,8 @@ typedef struct {
   // 路径（固定大小，避免内存泄漏）
   char log_path[256];
   char log_path_icr[256];
-  char cmd_delim[16];
-
   // 数值配置
-  int max_recover_cmd;
-  int line_max;
-  int default_capacity;
-  int mmap_grow_factor;
   int buffer_length;
-  int max_cmd_num;
 
   // 存储引擎
   int enable_rbtree;

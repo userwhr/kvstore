@@ -76,9 +76,6 @@ static void parse_line(char *line, KvConfig *cfg) {
   } else if (strcmp(key, "LOG_PATH_ICR") == 0) {
     trim_quotes(value);
     strncpy(cfg->log_path_icr, value, sizeof(cfg->log_path_icr) - 1);
-  } else if (strcmp(key, "CMD_DELIM") == 0) {
-    trim_quotes(value);
-    strncpy(cfg->cmd_delim, value, sizeof(cfg->cmd_delim) - 1);
   }
 
   // ====================== 整型配置项 ======================
@@ -86,18 +83,8 @@ static void parse_line(char *line, KvConfig *cfg) {
     cfg->enable_full_persist = parse_bool_value(value);
   else if (strcmp(key, "ENABLE_INCREMENTAL_PERSIST") == 0)
     cfg->enable_incremental_persist = parse_bool_value(value);
-  else if (strcmp(key, "MAX_RECOVER_CMD") == 0)
-    cfg->max_recover_cmd = atoi(value);
-  else if (strcmp(key, "LINE_MAX") == 0)
-    cfg->line_max = atoi(value);
-  else if (strcmp(key, "DEFAULT_CAPACITY") == 0)
-    cfg->default_capacity = atoi(value);
-  else if (strcmp(key, "MMAP_GROW_FACTOR") == 0)
-    cfg->mmap_grow_factor = atoi(value);
   else if (strcmp(key, "BUFFER_LENGTH") == 0)
     cfg->buffer_length = atoi(value);
-  else if (strcmp(key, "MAX_CMD_NUM") == 0)
-    cfg->max_cmd_num = atoi(value);
   else if (strcmp(key, "ENABLE_RBTREE") == 0)
     cfg->enable_rbtree = parse_bool_value(value);
   else if (strcmp(key, "ENABLE_ARRAY") == 0)
@@ -133,9 +120,6 @@ int load_config(const char *config_path) {
   // 设置默认值
   strcpy(g_config.log_path, "./log/full_log.txt");
   strcpy(g_config.log_path_icr, "./log/icr_log.txt");
-  strcpy(g_config.cmd_delim, "&&");
-  g_config.line_max = 1048576;
-  g_config.max_cmd_num = 10000;
   g_config.enable_rbtree = 1;
   g_config.enable_array = 1;
   g_config.enable_hash = 1;

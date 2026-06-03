@@ -7,10 +7,9 @@
 #define MAX_LEVEL 16 // 最大层数
 #define P 0.5        // 随机层数的概率因子
 
-// 随机生成节点层数
+// 随机生成节点层数（srand 在 skiplist_create 中调用一次）
 static int random_level() {
   int level = 1;
-  srand((unsigned)time(NULL));
   while (rand() < RAND_MAX * P && level < MAX_LEVEL) {
     level++;
   }
@@ -51,6 +50,9 @@ static Node *create_node(const char *key, const char *value, int level) {
 int skiplist_creat(kvs_skiplist_t *inst) {
   if (!inst)
     return -1;
+
+  // 初始化随机种子（只调用一次）
+  srand((unsigned)time(NULL));
 
   // 初始化跳表结构体
   inst->max_level = MAX_LEVEL;
